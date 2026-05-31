@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Технический отчет по ML-ноутбукам: дисбаланс классов, регрессия, кодирование признаков и PCA</title>
+  <script>
+    window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] } };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --paper: #ffffff;
+      --ink: #17202a;
+      --muted: #596575;
+      --line: #d8e0ea;
+      --accent: #2557a7;
+      --accent-2: #0f766e;
+      --soft: #eef4ff;
+      --soft-2: #ecfdf5;
+      --code-bg: #111827;
+      --code-ink: #e5e7eb;
+      --warn: #92400e;
+      --warn-bg: #fffbeb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 55%, #0f766e 100%);
+      color: white;
+      padding: 56px 28px;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; }
+    header h1 { margin: 0 0 14px; font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1.1; letter-spacing: -0.035em; }
+    header p { max-width: 920px; margin: 0; color: #e5eefc; font-size: 1.12rem; }
+    main { max-width: 1180px; margin: 28px auto 64px; padding: 0 20px; }
+    section, .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px;
+      margin: 22px 0;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.055);
+    }
+    h2 { margin: 0 0 18px; font-size: 2rem; color: #0f172a; letter-spacing: -0.02em; border-bottom: 2px solid var(--line); padding-bottom: 10px; }
+    h3 { margin: 28px 0 12px; font-size: 1.38rem; color: var(--accent); }
+    h4 { margin: 22px 0 10px; font-size: 1.08rem; color: #0f172a; }
+    p { margin: 10px 0; }
+    .lead { font-size: 1.08rem; color: var(--muted); }
+    .toc { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .toc a { display: block; padding: 12px 14px; background: var(--soft); border-radius: 12px; color: var(--accent); text-decoration: none; font-weight: 650; }
+    .toc a:hover { text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.95rem; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; vertical-align: top; }
+    th { background: #f1f5f9; text-align: left; color: #0f172a; }
+    tr:nth-child(even) td { background: #fbfdff; }
+    code { background: #eef2f7; padding: 0.16rem 0.34rem; border-radius: 6px; font-size: 0.93em; }
+    pre { background: var(--code-bg); color: var(--code-ink); padding: 18px; border-radius: 14px; overflow-x: auto; line-height: 1.45; }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    .note { border-left: 5px solid var(--accent-2); background: var(--soft-2); padding: 14px 16px; border-radius: 10px; margin: 16px 0; }
+    .warning { border-left: 5px solid var(--warn); background: var(--warn-bg); padding: 14px 16px; border-radius: 10px; margin: 16px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .metric { background: #f8fafc; border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+    .metric strong { display: block; font-size: 1.1rem; color: #0f172a; }
+    .small { color: var(--muted); font-size: 0.92rem; }
+    .pill { display: inline-block; background: #e0f2fe; color: #075985; padding: 4px 9px; border-radius: 999px; font-size: 0.84rem; font-weight: 700; margin: 2px 4px 2px 0; }
+    .subtitle { color: var(--muted); margin-top: -8px; }
+    footer { max-width: 1180px; margin: 0 auto 40px; padding: 0 20px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>Технический отчет по двум ML-ноутбукам</h1>
+    <p>Педагогическое руководство по задачам классификации на несбалансированных классах и регрессии с инженерией признаков, категориальным кодированием, бустингом и PCA. Материал основан на ноутбуках <code>imbalanced_classification_quality.ipynb</code> и <code>regression_feature_engineering_pca.ipynb</code>, с API-сверкой по актуальной документации scikit-learn и XGBoost через Context7.</p>
+  </div>
+</header>
+<main>
+  <section id="overview">
+    <h2>Обзор и Навигация</h2>
+    <p class="lead">Отчет построен от теории к реализации: сначала вводятся статистические основания, затем разбираются алгоритмы и метрики, после чего приводится API-справочник с ролью каждого вызова в рабочем процессе.</p>
+    <div class="toc">
+      <a href="#classification">1. Несбалансированная бинарная классификация</a>
+      <a href="#regression">2. Регрессия, feature engineering и PCA</a>
+      <a href="#api-classification">3. API-справочник: классификация</a>
+      <a href="#api-regression">4. API-справочник: регрессия и PCA</a>
+      <a href="#best-practices">5. Методологические выводы</a>
+    </div>
+    <div class="note">
+      В ноутбуках используются воспроизводимые разбиения через <code>random_state=42</code>. Для классификации данные берутся из <code>load_breast_cancer</code> без сетевой загрузки; для регрессии используется OpenML-набор <code>house_prices</code> с целевой переменной <code>SalePrice</code>.
+    </div>
+  </section>
+
+  <section id="classification">
+    <h2>Ноутбук 1: Критерии качества классификации на несбалансированных классах</h2>
+    <p class="subtitle"><code>imbalanced_classification_quality.ipynb</code></p>
+
+    <h3>1. Теоретический фреймворк</h3>
+    <p>Задача бинарной классификации формализуется как построение функции $f: \mathbb{R}^p \rightarrow \{0,1\}$ или скоринговой функции $s(x)=P(y=1\mid x)$. В данном ноутбуке положительным классом считается <em>malignant</em>, то есть более редкий и прикладно важный класс. Искусственное усиление дисбаланса оставляет все объекты класса <em>benign</em> и 35% объектов <em>malignant</em>, что приводит к соотношению примерно 82.8% против 17.2%.</p>
+    <p>При дисбалансе классов accuracy может быть завышенной: классификатор, почти всегда выбирающий мажоритарный класс, получает высокую долю правильных ответов, но плохо обнаруживает редкие положительные объекты. В медицинском примере это особенно опасно: модель может часто говорить «здоров», получать приемлемую долю совпадений с разметкой, но пропускать именно те случаи, ради которых система строится. Поэтому анализ начинается не с одного числа, а с матрицы ошибок, где явно разделены успешные и ошибочные решения по каждому классу:</p>
+    <table>
+      <tr><th>Компонент</th><th>Определение</th><th>Интерпретация</th></tr>
+      <tr><td>TP</td><td>Истинно положительные</td><td>Положительный объект найден моделью</td></tr>
+      <tr><td>TN</td><td>Истинно отрицательные</td><td>Отрицательный объект правильно отклонен</td></tr>
+      <tr><td>FP</td><td>Ложноположительные</td><td>Отрицательный объект ошибочно помечен как положительный</td></tr>
+      <tr><td>FN</td><td>Ложноотрицательные</td><td>Положительный объект пропущен</td></tr>
+    </table>
+    <p>Ключевые метрики выводятся из этой матрицы. Они отвечают на разные вопросы, поэтому не заменяют друг друга:</p>
+    <p>$$Accuracy=\frac{TP+TN}{TP+TN+FP+FN}$$</p>
+    <p>$$Precision=\frac{TP}{TP+FP},\quad Recall=Sensitivity=\frac{TP}{TP+FN},\quad Specificity=\frac{TN}{TN+FP}$$</p>
+    <table>
+      <tr><th>Метрика</th><th>Интуитивный вопрос</th><th>Когда особенно важна</th></tr>
+      <tr><td>Accuracy</td><td>Какая доля всех решений верна?</td><td>При примерно равных классах и сопоставимой цене FP/FN</td></tr>
+      <tr><td>Precision</td><td>Если модель сказала «positive», как часто она права?</td><td>Когда ложные тревоги дороги: лишние обследования, блокировки, ручные проверки</td></tr>
+      <tr><td>Recall / Sensitivity / TPR</td><td>Какую долю настоящих positive модель нашла?</td><td>Когда пропуск positive дорог: болезнь, мошенничество, дефект, риск</td></tr>
+      <tr><td>Specificity / TNR</td><td>Какую долю настоящих negative модель не тронула?</td><td>Когда важно не перегружать систему ложными срабатываниями</td></tr>
+      <tr><td>FPR</td><td>Какую долю negative модель ошибочно подняла как positive?</td><td>При анализе ROC и выборе допустимого уровня ложных тревог</td></tr>
+    </table>
+    <p>Важно различать <em>скоринговую модель</em> и <em>решающее правило</em>. Многие классификаторы сначала возвращают не окончательный класс, а численный скор или вероятность: например, <code>predict_proba</code> дает оценку $s(x)$. Класс появляется только после выбора порога $t$: объект считается положительным, если $s(x) \ge t$. Если порог понизить, модель станет чаще находить positive, recall обычно вырастет, но вместе с ним увеличится число ложноположительных FP. Если порог повысить, ложных тревог станет меньше, но возрастет риск пропустить positive, то есть увеличить FN.</p>
+    <p>ROC-кривая строится именно при варьировании порога $t$ для правила $\hat{y}=\mathbb{1}[s(x)\ge t]$ и отображает зависимость $TPR$ от $FPR$:</p>
+    <p>$$TPR=Recall,\quad FPR=\frac{FP}{FP+TN}=1-Specificity$$</p>
+    <p>По оси $Y$ откладывается чувствительность $TPR$: насколько хорошо модель видит положительный класс. По оси $X$ откладывается частота ложноположительных срабатываний $FPR$: насколько часто отрицательные объекты ошибочно объявляются положительными. При очень низком пороге почти все объекты объявляются positive, поэтому $TPR \approx 1$ и $FPR \approx 1$. При очень высоком пороге почти все объекты объявляются negative, поэтому $TPR \approx 0$ и $FPR \approx 0$. Поэтому ROC-кривая соединяет область около $(0,0)$ с областью около $(1,1)$, а ее форма показывает, насколько удачно скор модели ранжирует положительные объекты выше отрицательных.</p>
+    <div class="note">
+      Геометрическая интерпретация ROC полезна для чтения графика: диагональ от $(0,0)$ до $(1,1)$ соответствует случайному угадыванию, идеальная модель стремится к левому верхнему углу $(0,1)$, где $FPR=0$ и $TPR=1$. Если существенная часть кривой лежит ниже диагонали, ранжирование хуже случайного на этих порогах; инвертирование решения может дать более сильный классификатор.
+    </div>
+    <p>ROC AUC — площадь под ROC-кривой. Ее можно понимать как вероятность того, что случайно выбранный положительный объект получит больший скор, чем случайно выбранный отрицательный объект. Значение $AUC=0.5$ соответствует случайному ранжированию, $AUC=1$ — идеальному разделению, а значение ниже $0.5$ указывает, что модель систематически ранжирует объекты в обратную сторону. Эта интерпретация особенно важна: ROC AUC оценивает не качество одного фиксированного порога, а качество ранжирования по всем порогам.</p>
+    <p>Однако высокий ROC AUC не означает автоматически хороший рабочий классификатор. В несбалансированной задаче даже небольшой $FPR$ может давать много ложных тревог, если отрицательных объектов очень много. Поэтому ROC-кривую нужно читать вместе с Precision-Recall кривой, confusion matrix при выбранном пороге и прикладной стоимостью ошибок. Precision-Recall кривая особенно важна при редком положительном классе, поскольку precision напрямую реагирует на ложные срабатывания среди объектов, объявленных положительными.</p>
+    <h4>Как практически читать ROC/PR в этом ноутбуке</h4>
+    <p>В ноутбуке ROC AUC около 0.983 у базовой модели говорит, что ранжирование почти всегда ставит злокачественные случаи выше доброкачественных. Но метрики при пороге 0.5 показывают более конкретную эксплуатационную картину: recall 0.818 означает, что часть malignant объектов пропущена. После балансировки весами recall вырос до 0.909, то есть модель стала чувствительнее к редкому классу. Цена этого улучшения — потенциальное увеличение FP и снижение precision/specificity, что типично для сдвига модели в сторону обнаружения positive.</p>
+    <p>Рабочий выбор порога должен делаться после ответа на прикладной вопрос: какая ошибка дороже? Если FN означает пропущенную болезнь, то разумно снижать порог и повышать recall, даже ценой дополнительных FP. Если FP запускает дорогую процедуру, нужно ограничить FPR или контролировать precision. Поэтому отчет рассматривает не только <code>roc_auc_score</code>, но и precision, recall, specificity, confusion matrix и PR-кривую.</p>
+
+    <h3>2. Методологический разбор</h3>
+    <h4>Формирование данных и стратифицированное разбиение</h4>
+    <p>Датасет <code>Breast Cancer Wisconsin</code> содержит числовые диагностические признаки. Целевая переменная перекодируется так, что <code>1</code> соответствует <em>malignant</em>. Для train/test используется <code>train_test_split(..., stratify=y)</code>, потому что при редком классе случайное разбиение без стратификации может исказить долю положительных объектов в контрольной выборке.</p>
+
+    <h4>GradientBoostingClassifier</h4>
+    <p>Базовая модель — градиентный бустинг деревьев решений с <code>loss="log_loss"</code>. Бустинг строит ансамбль аддитивно:</p>
+    <p>$$F_M(x)=\sum_{m=1}^{M}\nu h_m(x),$$</p>
+    <p>где $h_m$ — очередное дерево, обучаемое на псевдо-остатках функции потерь, а $\nu$ — <code>learning_rate</code>. Для бинарной классификации логистическая функция потерь соответствует максимизации правдоподобия Бернулли и дает вероятностные оценки через <code>predict_proba</code>.</p>
+
+    <h4>ROC, PR и cross-validation OOF</h4>
+    <p>В ноутбуке строятся ROC/PR-кривые на тестовой выборке, затем ROC на train, test и out-of-fold прогнозах. Train ROC показывает, насколько хорошо модель объясняет уже виденные данные, test ROC показывает качество на отложенной выборке, а OOF ROC дает более устойчивую картину на всем обучающем наборе без прямой оценки объекта моделью, которая на нем обучалась.</p>
+    <p>OOF-прогнозы из <code>cross_val_predict(..., method="predict_proba")</code> означают, что каждый объект получает вероятность от модели, которая не обучалась на нем. Это снижает оптимистическое смещение по сравнению с оценкой на обучающих данных. Если train AUC заметно выше test/OOF AUC, это сигнал переобучения или слишком гибкого порога/модели. В результатах ноутбука train AUC равен 1.000, test AUC — 0.983, OOF AUC — 0.969; разрыв есть, но ранжирование на невидимых данных остается сильным.</p>
+
+    <h4>Сравнение критериев обучения</h4>
+    <p>Сравниваются <code>GradientBoostingClassifier(loss="log_loss")</code>, <code>GradientBoostingClassifier(loss="exponential")</code>, <code>AdaBoostClassifier</code> и <code>LogisticRegression</code> с масштабированием. Экспоненциальная потеря связана с AdaBoost и сильнее штрафует неправильно классифицированные объекты с большим отрицательным margin. Логистическая регрессия, несмотря на линейную форму границы в стандартизованном пространстве, может давать сильную ранжирующую способность на хорошо разделимых медицинских признаках.</p>
+
+    <h4>Балансировка через веса объектов</h4>
+    <p><code>compute_sample_weight(class_weight="balanced", y=y_train)</code> назначает объектам веса, обратно пропорциональные частотам классов. Идея состоит в равенстве суммарного вклада классов в функцию потерь. В результате recall редкого класса вырос с 0.818 до 0.909, при небольшом снижении precision и specificity. Это типичный компромисс: если цена FN высока, веса могут быть предпочтительны.</p>
+
+    <h3>3. Эмпирические результаты ноутбука</h3>
+    <table>
+      <tr><th>Блок</th><th>Результат</th><th>Методологический смысл</th></tr>
+      <tr><td>Дисбаланс</td><td>357 negative / benign, 74 positive / malignant</td><td>Положительный класс редкий: accuracy нельзя использовать изолированно</td></tr>
+      <tr><td>Базовая модель на test</td><td>Accuracy 0.954, Precision 0.900, Recall 0.818, Specificity 0.981</td><td>Модель надежно отсекает отрицательные объекты, но часть положительных пропускает</td></tr>
+      <tr><td>ROC/PR</td><td>ROC AUC 0.983, Average Precision 0.848</td><td>Высокое качество ранжирования; PR показывает качество именно по редкому классу</td></tr>
+      <tr><td>Train/Test/OOF</td><td>Train AUC 1.000, Test AUC 0.983, OOF AUC 0.969</td><td>Train идеален, OOF дает более консервативную оценку</td></tr>
+      <tr><td>Сравнение критериев</td><td>Лучший OOF ROC AUC у LogisticRegression log_loss: 0.985</td><td>Выбор семейства модели влияет не меньше, чем выбор loss</td></tr>
+      <tr><td>Веса объектов</td><td>ROC AUC 0.989, AP 0.961, Recall 0.909</td><td>Балансировка повышает чувствительность к редкому классу</td></tr>
+    </table>
+  </section>
+
+  <section id="regression">
+    <h2>Ноутбук 2: Регрессия, кодирование категорий и PCA</h2>
+    <p class="subtitle"><code>regression_feature_engineering_pca.ipynb</code></p>
+
+    <h3>1. Теоретический фреймворк</h3>
+    <p>Задача регрессии состоит в аппроксимации условного математического ожидания $\mathbb{E}[Y\mid X=x]$, где $Y$ — непрерывная цена дома <code>SalePrice</code>. Датасет <code>house_prices</code> содержит 1460 объектов и 80 признаков: 37 числовых и 43 категориальных.</p>
+
+    <h4>Линейная регрессия как baseline</h4>
+    <p>Линейная модель предполагает:</p>
+    <p>$$\hat{y}=\beta_0+\sum_{j=1}^{p}\beta_j x_j,$$</p>
+    <p>а параметры оцениваются минимизацией суммы квадратов ошибок. Она интерпретируема и полезна как baseline, но не моделирует нелинейные взаимодействия без явного добавления признаков.</p>
+
+    <h4>Градиентный бустинг деревьев</h4>
+    <p>XGBoost строит аддитивную композицию деревьев, оптимизируя регуляризованную функцию цели:</p>
+    <p>$$\mathcal{L}=\sum_i l(y_i, \hat{y}_i)+\sum_k \Omega(f_k),\quad \Omega(f)=\gamma T+\frac{1}{2}\lambda\sum_{j=1}^{T}w_j^2.$$</p>
+    <p>Параметры <code>max_depth</code>, <code>n_estimators</code>, <code>learning_rate</code>, <code>subsample</code>, <code>colsample_bytree</code> и <code>reg_lambda</code> управляют bias-variance trade-off.</p>
+
+    <h4>Кодирование категориальных признаков</h4>
+    <p><strong>One-hot encoding</strong> заменяет категорию бинарным индикатором. Это безопасно относительно утечки целевой переменной, но увеличивает размерность. При неизвестных категориях на тесте используется <code>handle_unknown="ignore"</code>.</p>
+    <p><strong>Target encoding</strong> заменяет категорию сглаженным средним целевой переменной:</p>
+    <p>$$TE(c)=\frac{n_c \bar{y}_c + \alpha \bar{y}}{n_c+\alpha},$$</p>
+    <p>где $n_c$ — число объектов категории, $\bar{y}_c$ — среднее по категории, $\bar{y}$ — глобальное среднее, $\alpha$ — сглаживание. Ноутбук реализует out-of-fold target encoding: значение для объекта считается по фолдам, где этот объект не участвовал в расчете статистики. Это критично для предотвращения target leakage.</p>
+
+    <h4>PCA</h4>
+    <p>PCA ищет ортогональные направления максимальной дисперсии. После стандартизации признаков решается спектральная задача для ковариационной матрицы:</p>
+    <p>$$\Sigma v_k=\lambda_k v_k,$$</p>
+    <p>где $v_k$ — главная компонента, $\lambda_k$ — объясненная дисперсия. Проекция $Z=XV$ позволяет визуализировать объекты в пространстве первых компонент. В ноутбуке первые две компоненты объясняют примерно 27.9% дисперсии.</p>
+
+    <h3>2. Методологический разбор</h3>
+    <h4>Предобработка числовых признаков</h4>
+    <p><code>SimpleImputer(strategy="median")</code> заполняет пропуски медианой, устойчивой к выбросам. <code>StandardScaler</code> центрирует и масштабирует признаки: $z=(x-\mu)/\sigma$. Это особенно важно для линейной регрессии и PCA, потому что масштаб признаков влияет на коэффициенты и ковариационную структуру.</p>
+
+    <h4>Подбор гиперпараметров</h4>
+    <p><code>GridSearchCV</code> перебирает сетку из 96 комбинаций параметров XGBoost с 5-фолдовой <code>KFold</code> кросс-валидацией. Оптимизируется <code>neg_root_mean_squared_error</code>, то есть scikit-learn максимизирует отрицательный RMSE. Лучшие параметры: <code>n_estimators=500</code>, <code>max_depth=2</code>, <code>learning_rate=0.06</code>, <code>subsample=0.8</code>, <code>colsample_bytree=1.0</code>, <code>reg_lambda=1.0</code>.</p>
+
+    <h4>Метрики регрессии</h4>
+    <p>$$RMSE=\sqrt{\frac{1}{n}\sum_i(y_i-\hat{y}_i)^2},\quad MAE=\frac{1}{n}\sum_i |y_i-\hat{y}_i|$$</p>
+    <p>$$R^2=1-\frac{\sum_i(y_i-\hat{y}_i)^2}{\sum_i(y_i-\bar{y})^2}$$</p>
+    <p>RMSE сильнее штрафует крупные ошибки, MAE легче интерпретировать в денежных единицах, а $R^2$ показывает долю объясненной вариации относительно константного прогноза.</p>
+
+    <h3>3. Эмпирические результаты ноутбука</h3>
+    <table>
+      <tr><th>Модель</th><th>RMSE</th><th>MAE</th><th>R²</th><th>Комментарий</th></tr>
+      <tr><td>LinearRegression: only numeric features</td><td>36882.49</td><td>23001.73</td><td>0.823</td><td>Интерпретируемый baseline только на числовых признаках</td></tr>
+      <tr><td>XGBRegressor: only numeric features, tuned</td><td>27301.76</td><td>17469.15</td><td>0.903</td><td>Нелинейности и взаимодействия улучшают качество</td></tr>
+      <tr><td>XGBRegressor: numeric + categorical OneHot</td><td>25122.20</td><td>16049.07</td><td>0.918</td><td>Лучший RMSE; категориальные признаки добавляют значимую информацию</td></tr>
+      <tr><td>XGBRegressor: numeric + categorical TargetEncoding</td><td>25562.02</td><td>16019.75</td><td>0.915</td><td>Компактное кодирование, близкое качество; требуется OOF-защита от утечки</td></tr>
+    </table>
+    <p>PCA-анализ показал, что PC1 сильнее всего связан с признаками общего качества и площади: <code>OverallQual</code>, <code>GrLivArea</code>, <code>GarageCars</code>, <code>GarageArea</code>, <code>FullBath</code>, <code>TotalBsmtSF</code>. PC2 сильнее нагружен на признаки этажности и структуры помещений: <code>2ndFlrSF</code>, <code>BedroomAbvGr</code>, <code>TotRmsAbvGrd</code>, <code>BsmtFinSF1</code>, <code>BsmtFullBath</code>.</p>
+  </section>
+
+  <section id="api-classification">
+    <h2>API & Implementation Reference: Классификация</h2>
+    <p>Справочник ниже фиксирует вызовы, использованные в ноутбуке, их входы, выходы и роль в workflow. Описания согласованы с официальной документацией scikit-learn stable, включая сведения о <code>StratifiedKFold</code>, <code>Pipeline</code>, метриках и дисплеях кривых.</p>
+    <table>
+      <tr><th>API</th><th>Ключевые параметры</th><th>Вход / выход</th><th>Роль в ноутбуке</th></tr>
+      <tr><td><code>load_breast_cancer(as_frame=True)</code></td><td><code>as_frame</code> возвращает pandas-структуры</td><td>Возвращает <code>Bunch</code> с <code>data</code>, <code>target</code>, метаданными</td><td>Локальный воспроизводимый датасет для бинарной классификации</td></tr>
+      <tr><td><code>np.random.default_rng</code>, <code>choice</code>, <code>shuffle</code>, <code>flatnonzero</code></td><td><code>RANDOM_STATE</code>, <code>replace=False</code></td><td>Массивы индексов</td><td>Искусственное усиление дисбаланса через подвыборку положительного класса</td></tr>
+      <tr><td><code>pd.DataFrame</code>, <code>value_counts</code>, <code>rename</code>, <code>round</code></td><td>Словари столбцов, нормализация частот</td><td>Таблицы частот и метрик</td><td>Представление распределений классов и результатов</td></tr>
+      <tr><td><code>train_test_split</code></td><td><code>test_size=0.3</code>, <code>stratify=y</code>, <code>random_state</code></td><td>Возвращает <code>X_train, X_test, y_train, y_test</code></td><td>Контрольное разбиение с сохранением долей классов</td></tr>
+      <tr><td><code>GradientBoostingClassifier</code></td><td><code>loss</code>, <code>n_estimators</code>, <code>learning_rate</code>, <code>max_depth</code>, <code>random_state</code></td><td><code>fit(X,y)</code>, <code>predict_proba(X)</code></td><td>Основная вероятностная модель классификации</td></tr>
+      <tr><td><code>confusion_matrix</code></td><td><code>y_true</code>, <code>y_pred</code></td><td>Матрица 2x2; через <code>.ravel()</code> извлекаются TN, FP, FN, TP</td><td>Расчет specificity и анализ ошибок</td></tr>
+      <tr><td><code>accuracy_score</code>, <code>precision_score</code>, <code>recall_score</code></td><td><code>y_true</code>, <code>y_pred</code></td><td>Скалярные метрики</td><td>Качество при пороге 0.5</td></tr>
+      <tr><td><code>roc_auc_score</code>, <code>average_precision_score</code></td><td><code>y_true</code>, вероятности положительного класса</td><td>Скалярные интегральные показатели</td><td>Оценка ранжирования и PR-качества</td></tr>
+      <tr><td><code>RocCurveDisplay.from_predictions</code></td><td><code>y_true</code>, <code>y_score</code>, <code>ax</code>, <code>name</code></td><td>Объект визуализации ROC</td><td>Построение ROC для test, train и OOF</td></tr>
+      <tr><td><code>PrecisionRecallDisplay.from_predictions</code></td><td><code>y_true</code>, <code>y_score</code>, <code>ax</code>, <code>name</code></td><td>Объект визуализации PR-кривой</td><td>Анализ качества по редкому классу</td></tr>
+      <tr><td><code>ConfusionMatrixDisplay.from_predictions</code></td><td><code>display_labels</code>, <code>cmap</code>, <code>values_format</code></td><td>Графическая матрица ошибок</td><td>Визуальная интерпретация ошибок</td></tr>
+      <tr><td><code>classification_report</code></td><td><code>target_names</code></td><td>Текстовый отчет precision/recall/f1/support</td><td>Компактный отчет по классам</td></tr>
+      <tr><td><code>StratifiedKFold</code></td><td><code>n_splits=5</code>, <code>shuffle=True</code>, <code>random_state</code></td><td>Индексы train/test для каждого фолда</td><td>Кросс-валидация с сохранением долей классов</td></tr>
+      <tr><td><code>cross_val_predict</code></td><td><code>cv</code>, <code>method="predict_proba"</code></td><td>OOF-прогнозы для всех объектов</td><td>Честная оценка ранжирования без обучения на оцениваемом объекте</td></tr>
+      <tr><td><code>AdaBoostClassifier</code></td><td><code>n_estimators</code>, <code>learning_rate</code>, <code>algorithm="SAMME"</code></td><td>Вероятности и классы</td><td>Сравнение альтернативного бустингового критерия</td></tr>
+      <tr><td><code>make_pipeline(StandardScaler(), LogisticRegression(...))</code></td><td><code>max_iter=3000</code>, <code>solver="lbfgs"</code></td><td>Pipeline с <code>fit</code> и <code>predict_proba</code></td><td>Линейная вероятностная модель на стандартизованных признаках</td></tr>
+      <tr><td><code>compute_sample_weight(class_weight="balanced", y)</code></td><td><code>class_weight="balanced"</code></td><td>Массив весов объектов</td><td>Компенсация дисбаланса при обучении</td></tr>
+      <tr><td><code>matplotlib.pyplot</code>, <code>seaborn.countplot</code></td><td><code>figsize</code>, <code>palette</code>, <code>title</code></td><td>Графики</td><td>Визуализация распределений и кривых качества</td></tr>
+    </table>
+  </section>
+
+  <section id="api-regression">
+    <h2>API & Implementation Reference: Регрессия, Кодирование и PCA</h2>
+    <p>В этом разделе перечислены значимые классы и методы, вызванные в регрессионном ноутбуке. Для scikit-learn учтены актуальные рекомендации по композиции пайплайнов: предобработка должна быть внутри <code>Pipeline</code>/<code>ColumnTransformer</code>, чтобы исключить leakage между train и test.</p>
+    <table>
+      <tr><th>API</th><th>Ключевые параметры</th><th>Вход / выход</th><th>Роль в ноутбуке</th></tr>
+      <tr><td><code>fetch_openml(name="house_prices", as_frame=True, return_X_y=True)</code></td><td><code>name</code>, <code>as_frame</code>, <code>return_X_y</code></td><td><code>X</code> как DataFrame, <code>y</code> как Series</td><td>Загрузка табличной регрессионной задачи</td></tr>
+      <tr><td><code>DataFrame.select_dtypes</code></td><td><code>include=np.number</code>, <code>exclude=np.number</code></td><td>Списки числовых и категориальных столбцов</td><td>Разделение признаков по типам</td></tr>
+      <tr><td><code>Series.astype(float)</code>, <code>describe</code>, <code>to_frame</code></td><td>Тип данных, имя столбца</td><td>Преобразованная цель и описательная статистика</td><td>Подготовка <code>SalePrice</code> и первичный EDA</td></tr>
+      <tr><td><code>Pipeline</code></td><td>Список <code>(name, transformer/estimator)</code></td><td>Единый объект с <code>fit</code>, <code>transform</code>, <code>predict</code></td><td>Сборка воспроизводимых ML-конвейеров</td></tr>
+      <tr><td><code>SimpleImputer</code></td><td><code>strategy="median"</code> или <code>"most_frequent"</code></td><td>Матрица без пропусков</td><td>Обработка NaN в числовых и категориальных признаках</td></tr>
+      <tr><td><code>StandardScaler</code></td><td>По умолчанию центрирует и делит на стандартное отклонение</td><td>Стандартизованная матрица</td><td>Подготовка данных для LinearRegression и PCA</td></tr>
+      <tr><td><code>LinearRegression</code></td><td>Стандартная МНК-модель</td><td><code>fit</code> оценивает коэффициенты, <code>predict</code> возвращает прогнозы</td><td>Baseline на числовых признаках</td></tr>
+      <tr><td><code>XGBRegressor</code></td><td><code>objective="reg:squarederror"</code>, <code>tree_method="hist"</code>, <code>n_estimators</code>, <code>max_depth</code>, <code>learning_rate</code>, <code>subsample</code>, <code>colsample_bytree</code>, <code>reg_lambda</code>, <code>n_jobs</code>, <code>random_state</code></td><td>Scikit-learn-compatible estimator: <code>fit</code>, <code>predict</code></td><td>Основная нелинейная регрессионная модель</td></tr>
+      <tr><td><code>KFold</code></td><td><code>n_splits=5</code>, <code>shuffle=True</code>, <code>random_state</code></td><td>Фолдовые индексы</td><td>CV для регрессионного подбора гиперпараметров</td></tr>
+      <tr><td><code>GridSearchCV</code></td><td><code>estimator</code>, <code>param_grid</code>, <code>scoring="neg_root_mean_squared_error"</code>, <code>cv</code>, <code>n_jobs=-1</code></td><td>Обученный объект с <code>best_params_</code>, <code>best_estimator_</code>, <code>best_score_</code></td><td>Систематический подбор сложности XGBoost</td></tr>
+      <tr><td><code>ColumnTransformer</code></td><td><code>transformers=[("num", ...), ("cat", ...)]</code>, <code>remainder="drop"</code></td><td>Единая матрица признаков после разных трансформаций по столбцам</td><td>Раздельная обработка числовых и категориальных признаков</td></tr>
+      <tr><td><code>OneHotEncoder</code></td><td><code>handle_unknown="ignore"</code>, <code>sparse_output=False</code></td><td>Плотная бинарная матрица индикаторов</td><td>Безопасное категориальное кодирование для XGBoost</td></tr>
+      <tr><td><code>BaseEstimator</code>, <code>TransformerMixin</code></td><td>Наследование пользовательского трансформера</td><td>Совместимость с <code>fit</code>, <code>transform</code>, <code>fit_transform</code></td><td>Реализация <code>TargetEncoderRegressor</code></td></tr>
+      <tr><td><code>TargetEncoderRegressor.fit</code></td><td><code>categorical_columns</code>, <code>smoothing</code></td><td>Словари <code>mapping_</code> и <code>global_mean_</code></td><td>Статистики категорий по train</td></tr>
+      <tr><td><code>TargetEncoderRegressor.fit_transform</code></td><td><code>n_splits=5</code>, <code>KFold</code></td><td>OOF-кодированные признаки train</td><td>Защита от утечки целевой переменной</td></tr>
+      <tr><td><code>mean_squared_error</code>, <code>mean_absolute_error</code>, <code>r2_score</code></td><td><code>y_true</code>, <code>y_pred</code></td><td>Скалярные метрики</td><td>Оценка регрессионного качества</td></tr>
+      <tr><td><code>PCA(n_components=2)</code></td><td><code>n_components</code>, <code>random_state</code></td><td>Проекции, <code>components_</code>, <code>explained_variance_ratio_</code></td><td>Визуализация структуры объектов в 2D</td></tr>
+      <tr><td><code>DataFrame.melt</code>, <code>sort_values</code>, <code>reset_index</code></td><td>Имена столбцов и сортировка</td><td>Длинный формат таблиц и ранжирование</td><td>Подготовка сравнительных таблиц и графиков</td></tr>
+      <tr><td><code>seaborn.histplot</code>, <code>barplot</code>, <code>matplotlib.scatter</code>, <code>colorbar</code></td><td><code>bins</code>, <code>kde</code>, <code>palette</code>, <code>cmap</code>, <code>alpha</code></td><td>EDA и сравнительные графики</td><td>Визуализация распределения цели, качества моделей и PCA-проекции</td></tr>
+    </table>
+  </section>
+
+  <section id="best-practices">
+    <h2>Методологические выводы и лучшие практики</h2>
+    <div class="grid">
+      <div class="metric"><strong>Изоляция test</strong><p>Все трансформации, зависящие от данных, должны обучаться только на train. Использование <code>Pipeline</code> и <code>ColumnTransformer</code> делает это системным.</p></div>
+      <div class="metric"><strong>Дисбаланс классов</strong><p>Accuracy должна дополняться precision, recall, specificity, ROC AUC и PR AUC. При редком положительном классе PR-кривая часто информативнее ROC.</p></div>
+      <div class="metric"><strong>Target encoding</strong><p>Для train следует использовать out-of-fold кодирование. Прямой расчет средних категорий на всей обучающей выборке может дать утечку и завышенное качество.</p></div>
+      <div class="metric"><strong>Бустинг</strong><p>Глубина деревьев, число деревьев, learning rate и регуляризация управляют компромиссом между недообучением и переобучением. Подбор через CV обязателен для честного сравнения.</p></div>
+      <div class="metric"><strong>PCA</strong><p>Перед PCA требуется масштабирование, иначе признаки с большими единицами измерения доминируют в компонентах. Loadings помогают интерпретировать смысл компонент.</p></div>
+      <div class="metric"><strong>Сравнение моделей</strong><p>Метрики должны соответствовать бизнес-стоимости ошибок: в медицинской диагностике FN часто дороже FP; в регрессии крупные ошибки могут быть критичнее средних.</p></div>
+    </div>
+    <div class="warning">
+      Техническая сверка: Context7 использован для актуальных справочных сведений по scikit-learn stable и XGBoost. В частности, подтверждены роли <code>StratifiedKFold</code>, <code>GridSearchCV</code>, <code>Pipeline</code>, <code>ColumnTransformer</code>, display-классов для ROC/PR и параметров <code>XGBRegressor</code> scikit-learn API. Дополнительная теоретическая детализация ROC-кривой, TPR/FPR, чувствительности, специфичности и AUC сверена с русской статьей Wikipedia «ROC-кривая».
+    </div>
+  </section>
+</main>
+<footer>
+  <p>Файл подготовлен как самостоятельный HTML-отчет. Для отображения формул используется MathJax CDN; при офлайн-просмотре текст и таблицы останутся доступны, а LaTeX-формулы будут показаны как исходная разметка.</p>
+</footer>
+</body>
+</html>
