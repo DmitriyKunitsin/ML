@@ -1,5 +1,5 @@
 import asyncio
-import re
+import re, os
 from enum import Enum
 from providers.ollama_providers import AsyncOllamaClient
 from core.base_agent import BaseAgent
@@ -12,6 +12,7 @@ from config.prompts import (
     SPEC_REVIEWER_PROMPT,
     MY_PROMPT,
 )
+from utils.helpers import Helper
 
 MAX_REVIEW_ATTEMPTS = 300  # Максимальное количество правок
 
@@ -149,29 +150,45 @@ async def process_step_4_arhitektor(
 
 
 async def process_step_5_coder(
-    agents: dict[AgentType, BaseAgent], context: dict, attempts: int
-) -> tuple[int, int]:
+    agents: dict[AgentType, BaseAgent], context: dict
+) -> int:
     print("💻 [Шаг 5] Написание кода программистом...")
     prompt_for_coder = f"Напиши код по архитектуре:\n{context[AgentType.ARHITEKTOR]}\n\nИ ТЗ:\n{context[AgentType.SPEC_WRITER]}"
-    if context.get(AgentType.TESTER):  # нет замечаний от тестера
+
+    if context.get(AgentType.TESTER):  # есть замечания от тестера
         prompt_for_coder += (
             f"\n\nИсправь ошибки из отчета тестировщика:\n{context[AgentType.TESTER]}"
         )
-    if context.get(AgentType.COMPILER):  # нету замечаний от компилера
+    if context.get(AgentType.COMPILER):  # есть замечания от компилера
         prompt_for_coder += (
-            f"\n\nИсправь ошибки из отчета компилярщика:\n{context[AgentType.COMPILER]}"
+            f"\n\nИсправь ошибки из отчета компилятора:\n{context[AgentType.COMPILER]}"
         )
 
-    coder_response = await agents[AgentType.CODER].execute_task(
+    code = await agents[AgentType.CODER].execute_task(
         prompt=prompt_for_coder,
         task_type="code",
     )
+    context[AgentType.CODER] = code
+    return 6
 
-    status, feedback = parse_verdict(coder_response)
+
+async def process_step_6_tester(
+    agents: dict[AgentType, BaseAgent], context: dict, attempts: int
+) -> tuple[int, int]:
+    print("🧪 [Шаг 6] Тестирование кода...")
+
+    tester_prompt = f"Протестируй код :\n{context[AgentType.CODER]}\n\nТехническое задание :\n{context[AgentType.SPEC_WRITER]}"
+
+    tester_response = await agents[AgentType.TESTER].execute_task(
+        prompt=tester_prompt, task_type="review"
+    )
+
+    status, feedback = parse_verdict(tester_response)
 
     if status == "APPROVED":
         print("💚 Код Успешно согласован!")
-        return 6, 0  # Идем дальше
+        context[AgentType.TESTER] = ""
+        return 7, 0  # Идем дальше
     else:
         attempts += 1
         print(f"⚠️КОД Отклонен. Попытка правки {attempts}/{MAX_REVIEW_ATTEMPTS}")
@@ -179,11 +196,36 @@ async def process_step_5_coder(
         if attempts >= MAX_REVIEW_ATTEMPTS:
             print("❌ Превышено максимальное количество правок ТЗ!")
             return 8, attempts  # exit while
-        context[AgentType.FEEDBACK] = feedback
-        context["user_idea"] = (
-            f"Переделай техническое задание. Замечания Валидатора : \n{feedback}\n\nОригинальная идея : {MY_PROMPT}"
+        context[AgentType.TESTER] = feedback
+        return 5, attempts  # next step 5
+
+
+async def process_step_7_compiler(
+    agents: dict[AgentType, BaseAgent], context: dict, attempts: int
+) -> tuple[int, int]:
+    print("🔧 [Шаг 7] Компиляция...")
+
+    if context.get(AgentType.CODER):
+        compile_ok, compile_errors = Helper().validate_syntax_python(
+            context[AgentType.CODER]
         )
-        return 5, attempts  # next step 6
+    else:
+        print("❌ Отсутсвие кода")
+        feedback = f"Код отсутствует"
+        attempts += 1
+        context[AgentType.COMPILER] = feedback
+        return 5, attempts
+
+    if not compile_ok:
+        print(f"❌ Компиляция не удалась, ошибки:\n{compile_errors[:500]}...")
+        feedback = f"Код не скомпилировался. Ошибки компилятора:\n{compile_errors}"
+        attempts += 1
+        context[AgentType.COMPILER] = feedback
+        return 5, attempts
+    else:
+        context[AgentType.COMPILER] = ""
+        print("✅ Компиляция успешна! Записываю код в файл")
+        return 8, 0
 
 
 async def main():
@@ -220,9 +262,30 @@ async def main():
                 agents, context, review_attempts
             )
         elif step == 6:
-            context[AgentType.TESTER] = agents[AgentType.TESTER]  # -> 7 || -> 5
+            step, review_attempts = await process_step_6_tester(
+                agents, context, review_attempts
+            )  # -> 7 || -> 5
         elif step == 7:
-            context[AgentType.COMPILER] = agents[AgentType.COMPILER]  # -> 5 || finish
+            step, review_attempts = await process_step_7_compiler(
+                agents, context, review_attempts
+            )  # -> 5 || finish
+
+    # --- Шаг 4: Сохраняем всё в файлы ---
+    project_dir = "/mnt/c/Work/Source-NSU/Arduino/llama3.1_8b_Project"
+    os.makedirs(project_dir, exist_ok=True)
+
+    with open(f"{project_dir}/TZ.txt", "w", encoding="utf-8") as f:
+        f.write(context[AgentType.SPEC_WRITER])
+
+    with open(f"{project_dir}/clock.ino", "w", encoding="utf-8") as f:
+        f.write(context[AgentType.CODER])
+
+    print(f"\n✅ Проект сохранён в {project_dir}")
+    print(f"📄 ТЗ: {project_dir}/TZ.txt")
+    print(f"📄 Код: {project_dir}/clock.ino")
+    if os.path.exists(f"{project_dir}/Review_Feedback.txt"):
+        print(f"📄 Замечания: {project_dir}/Review_Feedback.txt")
+    print("\n🎉 Работа завершена!")
 
 
 if __name__ == "__main__":
