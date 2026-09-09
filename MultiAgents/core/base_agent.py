@@ -13,9 +13,9 @@ class BaseAgent:
     """Базовый класс агента, работающий с асбтрактной LLM"""
 
     def __init__(
-        self, role_name: str, role_prompt: str, llm: BaseLLM, context_limit: int = 8192
+        self, name_agent: str, role_prompt: str, llm: BaseLLM, context_limit: int = 8192
     ):
-        self.role_name = role_name  # Просто имя агента
+        self.name = name_agent  # Просто имя агента
         self.role_prompt = role_prompt  # роль агента
         self.llm = llm  # LLM
 
@@ -24,12 +24,11 @@ class BaseAgent:
         context_limit = await self.llm._get_context_limit(task_type)
         if not self.validate_prompt(prompt, context_limit):
             raise ValueError(
-                f"Ошибка: Промпт для агента '{self.role_name}' слишком огромный ({self.count_tokens(self.role_prompt + prompt)} токенов)! "
+                f"Ошибка: Промпт для агента '{self.name}' слишком огромный ({self.count_tokens(self.role_prompt + prompt)} токенов)! "
                 f"Он превышает безопасный лимит контекста ({context_limit - SAFE_LIMIT} токенов)."
             )
         return await self.llm.generate(
             prompt=prompt,
-            model_role=self.role_name,
             system_prompt=self.role_prompt,
             task_type=task_type,
         )
@@ -55,7 +54,7 @@ class BaseAgent:
         available_space = context_limit - SAFE_LIMIT
 
         print(
-            f"[{self.role_name}] Размер запроса: {prompt_tokens} токенов. Доступно: {available_space}"
+            f"[{self.name}] Размер запроса: {prompt_tokens} токенов. Доступно: {available_space}"
         )
 
         if prompt_tokens > available_space:

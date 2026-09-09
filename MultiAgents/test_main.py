@@ -8,7 +8,7 @@ async def main():
     ollama = AsyncOllamaClient()
 
     boss = BaseAgent(
-        role_name="boss",
+        name_agent="Arduino специалист",
         role_prompt="Ты — строгий, но конструктивный тимлид и архитектор встроенных систем с 10-летним стажем разработки под Arduino.",
         llm=ollama,
     )

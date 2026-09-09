@@ -17,31 +17,31 @@ class AsyncOllamaClient(BaseLLM):
         self.models = {"boss": boss_model, "worker": worker_model}
 
         self._task_configs = {
-            "short": (8192, 32, 0.5),
-            "chat": (8192, 64, 0.5),
-            "long": (65536, 2048, 0.5),
-            "code": (8192, 4096, 0.2),
-            "boss": (8192, 2048, 0.3),
-            "review": (32768, 2048, 0.3),
+            # Больше контекста для диалога, достаточно токенов для развёрнутого ответа.
+            "chat": ("llama3.2:3b", 16384, 512, 0.5),
+            # Максимальный контекст для большого кода, много токенов для полного скетча, низкая температура для строгого синтаксиса.
+            "code": ("codellama:7b-instruct-q4_K_M", 16384, 8192, 0.1),
+            # Большой контекст для анализа, много токенов для детального ТЗ.
+            "boss": ("llama3.1:8b-instruct-q4_K_M", 32768, 4096, 0.3),
+            # Максимальный контекст для чтения большого кода и ТЗ, много токенов для развёрнутых замечаний.
+            "review": ("llama3.1:8b-instruct-q4_K_M", 65536, 4096, 0.3),
         }
-        self._default_config = (8192, 64, 0.5)
+        self._default_config = ("llama3.2:3b", 8192, 64, 0.5)
 
     def _get_config(self, task_type: str) -> tuple:
         return self._task_configs.get(task_type.lower(), self._default_config)
 
-    async def _get_context_limit(self, task_type):
-        return self._get_config(task_type)[0]
+    async def _get_context_limit(self, task_type: str) -> int:
+        return self._get_config(task_type)[1]
 
     async def _generate(
         self,
-        model_role: str,
         prompt: str,
         system_prompt: str = "",
         task_type: str = "chat",
     ) -> str | None:
         """Реализация _generate() для Ollama."""
-        model_name = self.models.get(model_role, model_role)
-        ctx, predict, temp = self._get_config(task_type)
+        model_name, ctx, predict, temp = self._get_config(task_type)
 
         messages = []
         if system_prompt:
