@@ -1,19 +1,228 @@
 import asyncio
+import re
+from enum import Enum
 from providers.ollama_providers import AsyncOllamaClient
 from core.base_agent import BaseAgent
-from prompts.boss_promt import ARDUINO_PROMPT
+from config.prompts import (
+    ARHITEKTOR_PROMPT,
+    CODER_PROMPT,
+    TESTER_PROMPT,
+    COMPILER_AGENT_PROMPT,
+    SPEC_WRITER_PROMPT,
+    SPEC_REVIEWER_PROMPT,
+    MY_PROMPT,
+)
+
+MAX_REVIEW_ATTEMPTS = 300  # Максимальное количество правок
+
+
+class AgentType(str, Enum):
+    """Строгий перечень типов агентов для предотвращения опечаток."""
+
+    SPEC_WRITER = "spec_writer"
+    SPEC_REVIEWER = "spec_reviewer"
+    ARHITEKTOR = "arhitektor"
+    CODER = "coder"
+    TESTER = "tester"
+    COMPILER = "compiler"
+    FEEDBACK = "spec_feedback"
+
+
+def create_agents(ollama_client: AsyncOllamaClient) -> dict[str, BaseAgent]:
+    """Фабрика для создания и инициализации всех агентов системы."""
+    return {
+        AgentType.SPEC_WRITER: BaseAgent(  # Шаг 2
+            name_agent="Системный аналитик",
+            role_prompt=SPEC_WRITER_PROMPT,
+            llm=ollama_client,
+        ),
+        AgentType.SPEC_REVIEWER: BaseAgent(  # Шаг 3
+            name_agent="Главный валидатор",
+            role_prompt=SPEC_REVIEWER_PROMPT,
+            llm=ollama_client,
+        ),
+        AgentType.ARHITEKTOR: BaseAgent(  # Шаг 4
+            name_agent="Архитектор",
+            role_prompt=ARHITEKTOR_PROMPT,
+            llm=ollama_client,
+        ),
+        AgentType.CODER: BaseAgent(  # Шаг 5
+            name_agent="Программист",
+            role_prompt=CODER_PROMPT,
+            llm=ollama_client,
+        ),
+        AgentType.TESTER: BaseAgent(  # Шаг 6
+            name_agent="Тестировщик",
+            role_prompt=TESTER_PROMPT,
+            llm=ollama_client,
+        ),
+        AgentType.COMPILER: BaseAgent(  # Шаг 7
+            name_agent="Компилятор",
+            role_prompt=COMPILER_AGENT_PROMPT,
+            llm=ollama_client,
+        ),
+    }
+
+
+# Вспомогательная функция для парсинга вердикта
+def parse_verdict(response_text: str) -> tuple[str, str]:
+    """
+    Ищет тег <verdict> в тексте.
+    Возвращает кортеж: (статус, чистый_текст_ответа)
+    """
+    match = re.search(
+        r"<verdict>(APPROVED|REJECTED)</verdict>", response_text, re.IGNORECASE
+    )
+    if match:
+        status = match.group(1).upper()
+        # Отрезаем сам тег вердикта из фидбека для чистоты
+        clean_feedback = re.sub(
+            r"<verdict>.*?</verdict>", "", response_text, flags=re.DOTALL
+        ).strip()
+        return status, clean_feedback
+
+    # Фолбек на случай, если модель забыла тег, но написала ключевое слово
+    if "APPROVED" in response_text.upper():
+        return "APPROVED", response_text
+    return "REJECTED", response_text
+
+
+# =====================================================================
+# МЕТОДЫ ДЛЯ КАЖДОГО ШАГА СТЕЙТ-МАШИНЫ
+# =====================================================================
+async def process_step_2_spec_writer(
+    agents: dict[AgentType, BaseAgent], context: dict
+) -> int:
+    print("📋 [Шаг 2] Составление ТЗ...")
+    context[AgentType.SPEC_WRITER] = await agents[AgentType.SPEC_WRITER].execute_task(
+        prompt=f"Составь ТЗ для моей идеи : {context['user_idea']}",
+        task_type="review",
+    )
+    return 3  # next step 3
+
+
+async def process_step_3_spec_reviewer(
+    agents: dict[AgentType, BaseAgent], context: dict, attempts: int
+) -> tuple[int, int]:
+    print("✔ [Шаг 3] Проверка технического задания...")
+    prompt_for_review = (
+        f"Проверь следующее техническое задание :\n\n{context[AgentType.SPEC_WRITER]}"
+    )
+    if context.get(AgentType.FEEDBACK):
+        prompt_for_review += f"\n\nПредыдущие замечания , которые должны быть исправлены : \n{context[AgentType.FEEDBACK]}"
+
+    reviewer_response = await agents[AgentType.SPEC_REVIEWER].execute_task(
+        prompt=prompt_for_review,
+        task_type="review",
+    )
+
+    status, feedback = parse_verdict(reviewer_response)
+
+    if status == "APPROVED":
+        print("💚 ТЗ Успешно согласовано!")
+        context[AgentType.FEEDBACK] = ""  # clear feedback
+        return 4, 0  # Идем к Архитектору
+    else:
+        attempts += 1
+        print(f"⚠️ТЗ Отклонено. Попытка правки {attempts}/{MAX_REVIEW_ATTEMPTS}")
+        print(f"замечания : {feedback[:500]}")
+        if attempts >= MAX_REVIEW_ATTEMPTS:
+            print("❌ Превышено максимальное количество правок ТЗ!")
+            return 8, attempts  # exit while
+        context[AgentType.FEEDBACK] = feedback
+        context["user_idea"] = (
+            f"Переделай техническое задание. Замечания Валидатора : \n{feedback}\n\nОригинальная идея : {MY_PROMPT}"
+        )
+        return 2, attempts  # next step 2
+
+
+async def process_step_4_arhitektor(
+    agents: dict[AgentType, BaseAgent], context: dict
+) -> int:
+    print("📐 [Шаг 4] Проектирование архитектуры...")
+    prompt_for_arhi = f"Спроектируй архитектуру согласно данному техническому заданию : \n\n{context[AgentType.SPEC_WRITER]}"
+    context[AgentType.ARHITEKTOR] = await agents[AgentType.ARHITEKTOR].execute_task(
+        prompt=prompt_for_arhi,
+        task_type="boss",
+    )
+    return 5
+
+
+async def process_step_5_coder(
+    agents: dict[AgentType, BaseAgent], context: dict, attempts: int
+) -> tuple[int, int]:
+    print("💻 [Шаг 5] Написание кода программистом...")
+    prompt_for_coder = f"Напиши код по архитектуре:\n{context[AgentType.ARHITEKTOR]}\n\nИ ТЗ:\n{context[AgentType.SPEC_WRITER]}"
+    if context.get(AgentType.TESTER):  # нет замечаний от тестера
+        prompt_for_coder += (
+            f"\n\nИсправь ошибки из отчета тестировщика:\n{context[AgentType.TESTER]}"
+        )
+    if context.get(AgentType.COMPILER):  # нету замечаний от компилера
+        prompt_for_coder += (
+            f"\n\nИсправь ошибки из отчета компилярщика:\n{context[AgentType.COMPILER]}"
+        )
+
+    coder_response = await agents[AgentType.CODER].execute_task(
+        prompt=prompt_for_coder,
+        task_type="code",
+    )
+
+    status, feedback = parse_verdict(coder_response)
+
+    if status == "APPROVED":
+        print("💚 Код Успешно согласован!")
+        return 6, 0  # Идем дальше
+    else:
+        attempts += 1
+        print(f"⚠️КОД Отклонен. Попытка правки {attempts}/{MAX_REVIEW_ATTEMPTS}")
+        print(f"замечания : {feedback[:500]}")
+        if attempts >= MAX_REVIEW_ATTEMPTS:
+            print("❌ Превышено максимальное количество правок ТЗ!")
+            return 8, attempts  # exit while
+        context[AgentType.FEEDBACK] = feedback
+        context["user_idea"] = (
+            f"Переделай техническое задание. Замечания Валидатора : \n{feedback}\n\nОригинальная идея : {MY_PROMPT}"
+        )
+        return 5, attempts  # next step 6
 
 
 async def main():
     ollama = AsyncOllamaClient()
 
-    boss = BaseAgent(
-        name_agent="Arduino специалист",
-        role_prompt="Ты — строгий, но конструктивный тимлид и архитектор встроенных систем с 10-летним стажем разработки под Arduino.",
-        llm=ollama,
-    )
-    result = await boss.execute_task(prompt=ARDUINO_PROMPT, task_type="boss")
-    print(result)
+    # 1 Пишу своими словами ТЗ
+    # 2 SPEC_WRITER_PROMPT составляет ТЗ
+    # 3 SPEC_REVIEWER_PROMPT согласовывает ТЗ, если ег
+    # 4 ARHITEKTOR_PROMPT проектирует архитектуру
+    # 5 CODER_PROMPT пишет код
+    # 6 TESTER_PROMPT проверяет код
+    # 7 COMPILER_AGENT_PROMPT запускает компилятор
+
+    agents = create_agents(ollama_client=ollama)
+    step = 2
+    context = {"user_idea": MY_PROMPT}
+    # Счетчик итераций
+    review_attempts = 0
+    while step <= 7:
+        if step == 2:
+            step = await process_step_2_spec_writer(
+                agents, context
+            )  # Формирует ТЗ для проверки
+        elif step == 3:
+            step, review_attempts = await process_step_3_spec_reviewer(  # Проверка
+                agents, context, review_attempts
+            )
+        elif step == 4:
+            step = await process_step_4_arhitektor(
+                agents, context
+            )  # Формирует архитектуру для проверки
+        elif step == 5:
+            step, review_attempts = await process_step_5_coder(
+                agents, context, review_attempts
+            )
+        elif step == 6:
+            context[AgentType.TESTER] = agents[AgentType.TESTER]  # -> 7 || -> 5
+        elif step == 7:
+            context[AgentType.COMPILER] = agents[AgentType.COMPILER]  # -> 5 || finish
 
 
 if __name__ == "__main__":
