@@ -258,9 +258,7 @@ async def main():
                 agents, context
             )  # Формирует архитектуру для проверки
         elif step == 5:
-            step, review_attempts = await process_step_5_coder(
-                agents, context, review_attempts
-            )
+            step, review_attempts = await process_step_5_coder(agents, context)
         elif step == 6:
             step, review_attempts = await process_step_6_tester(
                 agents, context, review_attempts
