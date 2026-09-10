@@ -209,7 +209,8 @@ async def process_step_6_compiler(
     print("🔧 [Шаг 7] Компиляция...")
 
     if context.get(AgentType.CODER):
-        Helper.clean_code(context[AgentType.CODER])
+        cleaned_code = Helper().clean_code(context[AgentType.CODER])
+        context[AgentType.CODER] = cleaned_code
         compile_ok, compile_errors = Helper().validate_syntax_python(
             context[AgentType.CODER]
         )
