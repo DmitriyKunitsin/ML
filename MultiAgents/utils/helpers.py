@@ -2,6 +2,7 @@ import os
 import tempfile
 import subprocess
 import ast
+import re
 
 
 class Helper:
@@ -42,6 +43,15 @@ class Helper:
                 return False, result.stderr
             except Exception as e:
                 return False, str(e)
+
+    @staticmethod
+    def clean_code(code: str) -> str:
+        """Убирает markdown-обёртки ```python ... ``` из кода."""
+        # Убираем открывающий блок ```python или ```
+        code = re.sub(r"^```\w*\s*\n", "", code, flags=re.MULTILINE)
+        # Убираем закрывающий блок ```
+        code = re.sub(r"\n```\s*$", "", code, flags=re.MULTILINE)
+        return code.strip()
 
     @staticmethod
     def validate_syntax_python(code_string: str) -> tuple[bool, str | None]:

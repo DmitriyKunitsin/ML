@@ -163,7 +163,10 @@ async def process_step_5_coder(
         prompt_for_coder += (
             f"\n\nИсправь ошибки из отчета компилятора:\n{context[AgentType.COMPILER]}"
         )
-
+    if context.get(AgentType.CODER):  # есть предыдущий код
+        prompt_for_coder += (
+            f"\n\nТвой предыдущий код :\n'''python\n{context[AgentType.CODER]}\n'''"
+        )
     code = await agents[AgentType.CODER].execute_task(
         prompt=prompt_for_coder,
         task_type="code",
@@ -206,6 +209,7 @@ async def process_step_7_compiler(
     print("🔧 [Шаг 7] Компиляция...")
 
     if context.get(AgentType.CODER):
+        Helper.clean_code(context[AgentType.CODER])
         compile_ok, compile_errors = Helper().validate_syntax_python(
             context[AgentType.CODER]
         )
@@ -258,7 +262,7 @@ async def main():
                 agents, context
             )  # Формирует архитектуру для проверки
         elif step == 5:
-            step, review_attempts = await process_step_5_coder(agents, context)
+            step = await process_step_5_coder(agents, context)
         elif step == 6:
             step, review_attempts = await process_step_6_tester(
                 agents, context, review_attempts
