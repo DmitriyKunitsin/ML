@@ -175,7 +175,7 @@ async def process_step_5_coder(
     return 6
 
 
-async def process_step_6_tester(
+async def process_step_7_tester(
     agents: dict[AgentType, BaseAgent], context: dict, attempts: int
 ) -> tuple[int, int]:
     print("🧪 [Шаг 6] Тестирование кода...")
@@ -191,7 +191,7 @@ async def process_step_6_tester(
     if status == "APPROVED":
         print("💚 Код Успешно согласован!")
         context[AgentType.TESTER] = ""
-        return 7, 0  # Идем дальше
+        return 8, 0  # Идем дальше
     else:
         attempts += 1
         print(f"⚠️КОД Отклонен. Попытка правки {attempts}/{MAX_REVIEW_ATTEMPTS}")
@@ -203,7 +203,7 @@ async def process_step_6_tester(
         return 5, attempts  # next step 5
 
 
-async def process_step_7_compiler(
+async def process_step_6_compiler(
     agents: dict[AgentType, BaseAgent], context: dict, attempts: int
 ) -> tuple[int, int]:
     print("🔧 [Шаг 7] Компиляция...")
@@ -229,7 +229,7 @@ async def process_step_7_compiler(
     else:
         context[AgentType.COMPILER] = ""
         print("✅ Компиляция успешна! Записываю код в файл")
-        return 8, 0
+        return 7, 0
 
 
 async def main():
@@ -264,13 +264,13 @@ async def main():
         elif step == 5:
             step = await process_step_5_coder(agents, context)
         elif step == 6:
-            step, review_attempts = await process_step_6_tester(
-                agents, context, review_attempts
-            )  # -> 7 || -> 5
-        elif step == 7:
-            step, review_attempts = await process_step_7_compiler(
+            step, review_attempts = await process_step_6_compiler(
                 agents, context, review_attempts
             )  # -> 5 || finish
+        elif step == 7:
+            step, review_attempts = await process_step_7_tester(
+                agents, context, review_attempts
+            )  # -> 7 || -> 5
 
     # --- Шаг 4: Сохраняем всё в файлы ---
     project_dir = "/mnt/c/Work/Source-NSU/Arduino/llama3.1_8b_Project"
