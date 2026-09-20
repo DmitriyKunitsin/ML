@@ -21,12 +21,12 @@ class BaseAgent:
 
     async def execute_task(self, prompt: str, task_type: str = "chat") -> str | None:
         """Выполняет задачу, передавая ее llm"""
-        context_limit = await self.llm._get_context_limit(task_type)
-        if not self.validate_prompt(prompt, context_limit):
-            raise ValueError(
-                f"Ошибка: Промпт для агента '{self.name}' слишком огромный ({self.count_tokens(self.role_prompt + prompt)} токенов)! "
-                f"Он превышает безопасный лимит контекста ({context_limit - SAFE_LIMIT} токенов)."
-            )
+        # context_limit = await self.llm._get_context_limit(task_type)
+        # if not self.validate_prompt(prompt, context_limit):
+        #     raise ValueError(
+        #         f"Ошибка: Промпт для агента '{self.name}' слишком огромный ({self.count_tokens(self.role_prompt + prompt)} токенов)! "
+        #         f"Он превышает безопасный лимит контекста ({context_limit - SAFE_LIMIT} токенов)."
+        #     )
         return await self.llm.generate(
             prompt=prompt,
             system_prompt=self.role_prompt,

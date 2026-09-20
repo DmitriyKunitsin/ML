@@ -62,3 +62,9 @@ class Helper:
         except SyntaxError as e:
             # Возвращает точное место: "SyntaxError: invalid syntax (line 12)"
             return False, f"SyntaxError: {e.msg} (line {e.lineno})"
+        except ValueError as e:
+            # ast.parse/compile падают не только на SyntaxError:
+            # - UnicodeEncodeError (битая кодировка, суррогаты) — подкласс ValueError;
+            # - "source code string cannot contain null bytes".
+            # Без этой ветки пайплайн падает необработанным исключением.
+            return False, f"{type(e).__name__}: {e}"
