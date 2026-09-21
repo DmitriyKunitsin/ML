@@ -33,6 +33,7 @@ import logging.handlers
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 # Один формат на весь проект.
@@ -43,9 +44,18 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_LOG_DIR = str(PROJECT_ROOT / "logs")
-LOG_FILE_NAME = "agent.log"
-MAX_LOG_BYTES = 5 * 1024 * 1024  # 5 МБ на файл
-LOG_BACKUP_COUNT = 3  # agent.log.1 ... agent.log.3
+LOG_FILE_NAME = "run.log"  # базовый лог запуска: logs/<запуск>/run.log
+MAX_LOG_BYTES = 5 * 1024 * 1024  # 5 МБ на файл (на случай очень долгого запуска)
+LOG_BACKUP_COUNT = 3  # run.log.1 ... run.log.3 — только если один запуск «раздулся»
+
+# Каждая папка лога — ОДИН запуск пайплайна. Внутри: run.log (жизненный цикл
+# + короткие preview()) и agents/<имя_агента>.log (полные промпты/ответы).
+AGENTS_LOG_SUBDIR = "agents"
+
+# Куда пишется лог ТЕКУЩЕГО запуска. Значение проставляется _make_run_dir() во
+# время setup_logging() и хранится в модуле, чтобы те же файлы агентов упали
+# в ту же папку. Через get_run_log_dir() на него смотрят остальные модули.
+_RUN_LOG_DIR: str | None = None
 
 DEFAULT_CONSOLE_LEVEL = "INFO"  # прод: консоль не шумит
 DEFAULT_FILE_LEVEL = "DEBUG"  # файл: всё, включая промпты — для отладки
@@ -90,6 +100,104 @@ class _SecretScrubbingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         return SECRET_PATTERN.sub("***", super().format(record))
+
+
+# --- Идентификация хендлеров, коды-«владельцы» ---
+# setup_logging и agent_logger пишут в разные файлы: первый — run.log,
+# второй — agents/<имя>.log. Оба помечаются атрибутом _agent_pipeline, а
+# _agent_log_name различает их. close_logging_handlers() и close_run_loggers()
+# используют эти маркеры, чтобы не закрывать чужое.
+_RUN_HANDLER_MARKER = "_agent_pipeline"
+_AGENT_HANDLER_MARKER = "_agent_log_name"
+
+
+def _find_agent_file_handler(logger_name: str) -> logging.Handler | None:
+    """Возвращает file-хендлер агента для указанного имени логгера (или None)."""
+    for handler in logging.getLogger(logger_name).handlers:
+        if getattr(handler, _AGENT_HANDLER_MARKER, None) == logger_name:
+            return handler
+    return None
+
+
+def register_agent_logger(
+    logger_name: str, agent_label: str, file_stem: str | None = None
+) -> None:
+    """Регистрирует логгер агента: создаёт файл agents/<stem>.log (если ещё нет).
+
+    ``logger_name`` — полное имя логгера (например, ``agent.coder``);
+    ``agent_label`` — человеческое имя агента для шапки логгера;
+    ``file_stem``  — безопасное имя файла без расширения (по умолчанию =
+    ``logger_name`` с заменой точек на ``_``).
+
+    Логгер пишет в свой собственный файл (без preview() — там лежат ПОЛНЫЕ
+    промпты и ответы, не нужны обрезки). Автоматическая каскадная передача
+    записей в run.log отключается флагом propagate=False, чтобы записи агента
+    не дублировались в базовом логе (там останется только ID-столбец
+    «см. строки N..M в agents/<id>.log»).
+    """
+    if _find_agent_file_handler(logger_name):
+        return  # уже создан ранее
+
+    run_dir = get_run_log_dir()
+    if not run_dir:
+        return
+    stem = (file_stem or logger_name.replace(".", "_")).strip()
+    agents_dir = Path(run_dir) / AGENTS_LOG_SUBDIR
+    try:
+        agents_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    handler = logging.FileHandler(
+        agents_dir / f"{stem}.log", encoding="utf-8"
+    )
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        _SecretScrubbingFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    )
+    setattr(handler, _AGENT_HANDLER_MARKER, logger_name)
+
+    agent_logger = logging.getLogger(logger_name)
+    agent_logger.setLevel(logging.DEBUG)
+    agent_logger.propagate = False
+    agent_logger.handlers[:] = [
+        h for h in agent_logger.handlers if getattr(h, _AGENT_HANDLER_MARKER, None)
+    ]
+    agent_logger.addHandler(handler)
+    setattr(agent_logger, "_agent_label", agent_label)
+    _agent_loggers.add(logger_name)
+    agent_logger.info("📁 Файл агента: %s", agents_dir / f"{stem}.log")
+
+
+# Реестр созданных логгеров агентов — для close_run_loggers().
+_agent_loggers: set[str] = set()
+
+
+def close_run_loggers() -> None:
+    """Закрывает файлы-хендлеры логгеров агентов.
+
+    Нужна после завершения запуска (в main()): на Windows открытый файл
+    нельзя удалить, а папка запуска должна остаться чистой и цельной.
+    """
+    for name in list(_agent_loggers):
+        agent_logger = logging.getLogger(name)
+        for handler in agent_logger.handlers[:]:
+            if getattr(handler, _AGENT_HANDLER_MARKER, None) == name:
+                agent_logger.removeHandler(handler)
+                handler.close()
+        _agent_loggers.discard(name)
+
+
+def _make_run_dir(log_base: str) -> str:
+    """Создаёт уникальную папку для ОДНОГО запуска: logs/<ГГГГ-ММ-ДД_ЧЧ-ММ-СС>[_n]."""
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    candidate = os.path.join(log_base, stamp)
+    n = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(log_base, f"{stamp}_{n}")
+        n += 1
+    os.makedirs(candidate, exist_ok=True)
+    return candidate
 
 
 def preview(text: str | None, limit: int = PREVIEW_LIMIT) -> str:
@@ -153,13 +261,20 @@ def setup_logging(
     # Эмодзи-маркеры этапов требуют UTF-8 в консоли — до первой записи.
     _ensure_utf8_console()
 
+    global _RUN_LOG_DIR
+    _RUN_LOG_DIR = None  # новый запуск — новая папка, даже при повторном setup_logging()
+
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)  # фильтруют хендлеры, а не логгер
 
-    # Идемпотентность: помечаем свои хендлеры атрибутом.
-    root.handlers[:] = [
-        h for h in root.handlers if not getattr(h, "_agent_pipeline", False)
+    # Идемпотентность: убираем свои прошлые хендлеры (и закрываем их, иначе
+    # на Windows файл лога остаётся заблокированным — ResourceWarning).
+    old_handlers = [
+        h for h in root.handlers if getattr(h, "_agent_pipeline", False)
     ]
+    for handler in old_handlers:
+        root.removeHandler(handler)
+        handler.close()
 
     formatter = _SecretScrubbingFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
@@ -172,7 +287,9 @@ def setup_logging(
     log_path: str | None = None
     try:
         os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, LOG_FILE_NAME)
+        run_dir = _make_run_dir(log_dir)
+        _RUN_LOG_DIR = run_dir
+        log_path = os.path.join(run_dir, LOG_FILE_NAME)
         file_handler = logging.handlers.RotatingFileHandler(
             log_path,
             maxBytes=MAX_LOG_BYTES,
@@ -200,12 +317,21 @@ def setup_logging(
     # иначе искать файл приходится наугад.
     if log_path:
         root.info(
-            "📄 Логи пишутся в файл: %s (консоль=%s, файл=%s).",
-            os.path.abspath(log_path),
+            "📄 Логи этого запуска: %s (консоль=%s, файл=%s).",
+            os.path.dirname(log_path),
             console_level,
             file_level,
         )
     return root
+
+
+def get_run_log_dir() -> str | None:
+    """Путь к папке логов ТЕКУЩЕГО запуска (None — если файл не поднялся).
+
+    Внутри папки лежат run.log и подпапка agents/ с файлами агентов.
+    Пригождается там, где надо показать «где логи» или прицепить файл агента.
+    """
+    return _RUN_LOG_DIR
 
 
 def get_log_file_path() -> str | None:
@@ -232,13 +358,14 @@ def _resolve_level(level: str | int | None) -> int:
 
 
 def close_logging_handlers() -> None:
-    """Закрывает и убирает хендлеры, созданные setup_logging().
+    """Закрывает и убирает хендлеры, созданные setup_logging() и agent_logger.
 
     Нужна там, где логирование переключают на другое место (тесты, повторный
     запуск в одном процессе). На Windows это ещё и обязательно: открытый
     файл лога нельзя удалить, поэтому временная папка с логом не чистится,
     пока хендлер не закрыт.
     """
+    close_run_loggers()  # сначала файлы агентов (в подпапке agents/)
     root = logging.getLogger()
     for handler in root.handlers[:]:
         if getattr(handler, "_agent_pipeline", False):

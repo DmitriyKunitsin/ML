@@ -34,9 +34,12 @@ from core.logging_setup import (
     PREVIEW_LIMIT,
     _SecretScrubbingFormatter,
     close_logging_handlers,
+    close_run_loggers,
     get_log_file_path,
+    get_run_log_dir,
     mask_secret,
     preview,
+    register_agent_logger,
     setup_logging,
 )
 
@@ -98,7 +101,10 @@ class LoggingTestBase(unittest.TestCase):
             handler.flush()
 
     def _read_log(self, log_dir):
-        with open(os.path.join(log_dir, "agent.log"), encoding="utf-8") as handle:
+        """Читает базовый лог из папки запуска (logs/<дата>/run.log)."""
+        run_dir = get_run_log_dir()
+        assert run_dir and run_dir.startswith(log_dir), "папка запуска не создана"
+        with open(os.path.join(run_dir, "run.log"), encoding="utf-8") as handle:
             return handle.read()
 
     def _console_handler(self):
@@ -115,8 +121,10 @@ class TestSetupLoggingHandlers(LoggingTestBase):
     def test_creates_console_and_file_handlers(self):
         log_dir = self._setup()
 
+        run_dir = get_run_log_dir()
         self.assertTrue(os.path.isdir(log_dir))
-        self.assertTrue(os.path.exists(os.path.join(log_dir, "agent.log")))
+        self.assertIsNotNone(run_dir)
+        self.assertTrue(os.path.exists(os.path.join(run_dir, "run.log")))
         self.assertEqual(self._console_handler().level, logging.INFO)
 
     def test_is_idempotent(self):
@@ -147,7 +155,8 @@ class TestSetupLoggingHandlers(LoggingTestBase):
 
         self.assertEqual(logging.getLogger().handlers, self._saved_handlers)
         # Файл лога остался на диске и доступен на чтение.
-        self.assertTrue(os.path.exists(os.path.join(log_dir, "agent.log")))
+        run_dir = get_run_log_dir()
+        self.assertTrue(os.path.exists(os.path.join(run_dir, "run.log")))
 
     def test_unwritable_log_dir_does_not_raise(self):
         """Каталог логов занят файлом: остаёмся с консолью, пайплайн не падает."""
@@ -177,22 +186,26 @@ class TestSetupLoggingHandlers(LoggingTestBase):
         log_path = get_log_file_path()
 
         self.assertTrue(os.path.isabs(log_path))
-        self.assertEqual(log_path, os.path.join(log_dir, "agent.log"))
+        run_dir = get_run_log_dir()
+        self.assertEqual(log_path, os.path.join(run_dir, "run.log"))
         logging.getLogger("path.probe").info("проверка пути")
         self._flush()
         self.assertTrue(os.path.exists(log_path))
 
     def test_setup_reports_log_file_in_console(self):
         """Куда пишется лог — видно в консоли, иначе файл ищут наугад."""
-        log_dir = self._setup()
-        log_path = os.path.join(log_dir, "agent.log")
+        log_dir = self._setup()  # создаёт первую папку запуска
 
         with self.assertLogs(level="INFO") as captured:
             setup_logging(
                 console_level="INFO", file_level="DEBUG", log_dir=log_dir
-            )
+            )  # повторный вызов — НОВАЯ папка (idempotent по хендлерам, но не по папке)
 
-        self.assertIn(os.path.abspath(log_path), "\n".join(captured.output))
+        joined = "\n".join(captured.output)
+        run_dir = get_run_log_dir()
+        self.assertIn(run_dir, joined)
+        # Папки запуска упоминаются в консоли, а не только в Debug
+        self.assertIn("Логи этого запуска", joined)
 
 
 class TestLogFormat(LoggingTestBase):
@@ -369,6 +382,79 @@ class TestNoPrintInPipeline(unittest.TestCase):
                 source,
                 f"{relative}: нет logger = logging.getLogger(__name__)",
             )
+
+
+class TestAgentRunLogs(LoggingTestBase):
+    """Отдельные файлы агентов: полные запросы/ответы, а не обрезка preview()."""
+
+    def test_register_agent_logger_creates_agent_file(self):
+        log_dir = self._setup()
+
+        register_agent_logger("agent.coder", "Программист", file_stem="coder")
+        self._flush()
+
+        run_dir = get_run_log_dir()
+        agent_file = os.path.join(run_dir, "agents", "coder.log")
+        self.assertTrue(os.path.exists(agent_file), f"нет файла {agent_file}")
+        with open(agent_file, encoding="utf-8") as handle:
+            content = handle.read()
+        self.assertIn("coder.log", content)
+
+    def test_agent_logger_writes_full_multiline_prompt(self):
+        log_dir = self._setup()
+
+        agent = logging.getLogger("agent.coder")
+        register_agent_logger("agent.coder", "Программист", file_stem="coder")
+        long_prompt = "строка один\n" + "y" * 3000 + "\nстрока три"
+        agent.info("ЗАПРОС: %s", long_prompt)
+        self._flush()
+
+        run_dir = get_run_log_dir()
+        with open(os.path.join(run_dir, "agents", "coder.log"), encoding="utf-8") as fh:
+            content = fh.read()
+        # Полный код сохранён (без preview-обрезки)
+        self.assertIn("y" * 3000, content)
+        # Переводы строк не потерялись
+        self.assertIn("строка один\n" + "y" * 3000 + "\nстрока три", content)
+
+    def test_agent_logger_does_not_duplicate_in_run_log(self):
+        """propagate=False: запись агента не попадает в run.log вовсе."""
+        log_dir = self._setup()
+
+        agent = logging.getLogger("agent.tester")
+        register_agent_logger("agent.tester", "Тестировщик", file_stem="tester")
+        agent.info("уникальная-метка-агента")
+        self._flush()
+
+        run_content = self._read_log(log_dir)
+        self.assertNotIn("уникальная-метка-агента", run_content)
+
+    def test_close_run_loggers_removes_agent_handlers(self):
+        log_dir = self._setup()
+        agent = logging.getLogger("agent.spec")
+        register_agent_logger("agent.spec", "Аналитик", file_stem="spec")
+
+        close_run_loggers()
+
+        self.assertEqual(agent.handlers, [])
+        run_dir = get_run_log_dir()
+        agent_file = os.path.join(run_dir, "agents", "spec.log")
+        self.assertTrue(os.path.exists(agent_file))
+
+    def test_new_setup_makes_new_run_dir(self):
+        """Два вызова setup_logging() — две разные папки (новый запуск = новый лог)."""
+        log_dir = os.path.join(self.tmpdir, "logs")
+        setup_logging(console_level="INFO", file_level="DEBUG", log_dir=log_dir)
+        first_dir = get_run_log_dir()
+
+        setup_logging(console_level="INFO", file_level="DEBUG", log_dir=log_dir)
+        second_dir = get_run_log_dir()
+
+        self.assertIsNotNone(first_dir)
+        self.assertIsNotNone(second_dir)
+        self.assertNotEqual(first_dir, second_dir)
+        self.assertTrue(os.path.exists(os.path.join(first_dir, "run.log")))
+        self.assertTrue(os.path.exists(os.path.join(second_dir, "run.log")))
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 import test_main
-from core.logging_setup import close_logging_handlers
+from core.logging_setup import close_logging_handlers, get_run_log_dir
 from test_main import (
     FINISH_OK,
     LIMIT_EXIT,
@@ -489,7 +489,7 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("Работа завершена", logs)
 
     def test_main_writes_log_file(self):
-        """Логи пишутся не только в консоль, но и в файл logs/agent.log."""
+        """Логи пишутся в папку запуска logs/<дата>/run.log (не только консоль)."""
         agents = build_agents(
             coder_default=VALID_PROJECT_SCANNER, tester_default=APPROVED
         )
@@ -497,7 +497,9 @@ class TestMainIntegration(unittest.TestCase):
         self._run_main(agents, capture=False)
         for handler in logging.getLogger().handlers:
             handler.flush()
-        log_path = os.path.join(self.tmpdir, "logs", "agent.log")
+        run_dir = get_run_log_dir()
+        self.assertIsNotNone(run_dir)
+        log_path = os.path.join(run_dir, "run.log")
         with open(log_path, encoding="utf-8") as handle:
             content = handle.read()
 

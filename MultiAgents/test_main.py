@@ -7,7 +7,13 @@ from enum import Enum
 from providers.ollama_providers import AsyncOllamaClient
 from providers.cloud_api_providers import CloudAPIProvider
 from core.base_agent import BaseAgent
-from core.logging_setup import get_log_file_path, preview, setup_logging
+from core.logging_setup import (
+    close_run_loggers,
+    get_log_file_path,
+    get_run_log_dir,
+    preview,
+    setup_logging,
+)
 from config.prompts import (
     ARHITEKTOR_PROMPT,
     CODER_PROMPT,
@@ -539,9 +545,14 @@ async def main():
         step,
         time.perf_counter() - started_at,
     )
+    # Логи этого запуска: папка вида logs/2026-..-.._HH-MM-SS с run.log и
+    # agents/*.log. Файлы агентов закрываем сейчас (на Windows открытый файл
+    # нельзя удалить/переместить), чтобы папка осталась цельной.
+    run_dir = get_run_log_dir()
     log_file = get_log_file_path()
     if log_file:
-        logger.info("📄 Подробный лог: %s", log_file)
+        logger.info("📄 Логи этого запуска: %s", run_dir or os.path.dirname(log_file))
+    close_run_loggers()
 
 
 if __name__ == "__main__":
