@@ -1,5 +1,10 @@
+import logging
+
 import httpx
 from core.base_llm import BaseLLM
+from core.logging_setup import preview
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncOllamaClient(BaseLLM):
@@ -15,6 +20,8 @@ class AsyncOllamaClient(BaseLLM):
         super().__init__(timeout=timeout)
         self.chat_url = f"{base_url.rstrip('/')}/api/chat"
         self.models = {"boss": boss_model, "worker": worker_model}
+        # Имя основной модели нужно для логов BaseAgent (getattr llm.model_name).
+        self.model_name = boss_model
 
         self._task_configs = {
             # Больше контекста для диалога, достаточно токенов для развёрнутого ответа.
@@ -42,6 +49,14 @@ class AsyncOllamaClient(BaseLLM):
     ) -> str | None:
         """Реализация _generate() для Ollama."""
         model_name, ctx, predict, temp = self._get_config(task_type)
+        logger.debug(
+            "🤖 Параметры вызова Ollama: модель=%s, task_type=%s, num_ctx=%s, num_predict=%s, temperature=%s.",
+            model_name,
+            task_type,
+            ctx,
+            predict,
+            temp,
+        )
 
         messages = []
         if system_prompt:
@@ -63,6 +78,14 @@ class AsyncOllamaClient(BaseLLM):
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            logger.debug(
+                "🤖 Запрос к Ollama %s (timeout=%.0f сек): user=%s",
+                self.chat_url,
+                self.timeout,
+                preview(prompt),
+            )
             response = await client.post(self.chat_url, json=payload)
             response.raise_for_status()
-            return response.json()["message"]["content"]
+            content = response.json()["message"]["content"]
+            logger.debug("🤖 Ответ Ollama: %s", preview(content))
+            return content

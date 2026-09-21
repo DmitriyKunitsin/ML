@@ -1,8 +1,11 @@
+import logging
 import os
 import tempfile
 import subprocess
 import ast
 import re
+
+logger = logging.getLogger(__name__)
 
 
 class Helper:
@@ -40,9 +43,16 @@ class Helper:
                 )
                 if result.returncode == 0:
                     return True, None
+                # stderr avr-g++ бывает длинным: обрезаем, чтобы лог не распухал.
+                logger.debug(
+                    "🔧 avr-g++ вернул код %d: %s",
+                    result.returncode,
+                    (result.stderr or "")[:500],
+                )
                 return False, result.stderr
-            except Exception as e:
-                return False, str(e)
+            except Exception:
+                logger.exception("❌ Не удалось запустить avr-g++.")
+                return False, "avr-g++: не удалось запустить компилятор"
 
     @staticmethod
     def clean_code(code: str) -> str:
@@ -58,13 +68,16 @@ class Helper:
         """Валидация пайтона"""
         try:
             ast.parse(code_string)
+            logger.debug("🔧 Синтаксис Python корректен (%d симв.).", len(code_string))
             return True, None
         except SyntaxError as e:
             # Возвращает точное место: "SyntaxError: invalid syntax (line 12)"
+            logger.debug("🔧 Синтаксическая ошибка: %s (line %s)", e.msg, e.lineno)
             return False, f"SyntaxError: {e.msg} (line {e.lineno})"
         except ValueError as e:
             # ast.parse/compile падают не только на SyntaxError:
             # - UnicodeEncodeError (битая кодировка, суррогаты) — подкласс ValueError;
             # - "source code string cannot contain null bytes".
             # Без этой ветки пайплайн падает необработанным исключением.
+            logger.warning("⚠️ Код не удалось разобрать: %s: %s", type(e).__name__, e)
             return False, f"{type(e).__name__}: {e}"

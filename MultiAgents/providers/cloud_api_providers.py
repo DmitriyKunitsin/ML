@@ -1,9 +1,13 @@
 import asyncio
+import logging
 
 from openai import AsyncOpenAI
 from config.key_llm import cloud_key
 
 from core.base_llm import BaseLLM
+from core.logging_setup import mask_secret, preview
+
+logger = logging.getLogger(__name__)
 
 
 class CloudAPIProvider(BaseLLM):
@@ -26,6 +30,15 @@ class CloudAPIProvider(BaseLLM):
             api_key=cloud_key,
             base_url=self.url,
             timeout=self.timeout,
+        )
+        # В лог уходит только маска: ключ в логах = утечка в git и в переписку.
+        logger.info(
+            "🚀 LLM-провайдер: %s (модель=%s, url=%s, ключ=%s, timeout=%.0f сек).",
+            type(self).__name__,
+            self.model_name,
+            self.url,
+            mask_secret(cloud_key),
+            self.timeout,
         )
 
         # (лимит_контекста, max_tokens_ответа, temperature) для каждого типа задачи.
@@ -57,6 +70,13 @@ class CloudAPIProvider(BaseLLM):
     ) -> str | None:
         """Реализация _generate() для облачного API (с повторными попытками)."""
         _, max_tokens, temperature = self._get_config(task_type)
+        logger.debug(
+            "🤖 Параметры вызова: модель=%s, task_type=%s, max_tokens=%d, temperature=%.2f.",
+            self.model_name,
+            task_type,
+            max_tokens,
+            temperature,
+        )
 
         messages = []
         if system_prompt:
@@ -68,6 +88,13 @@ class CloudAPIProvider(BaseLLM):
 
         for attempt in range(1, total_attempts + 1):
             try:
+                logger.debug(
+                    "🤖 Запрос к LLM (попытка %d/%d): system=%s | user=%s",
+                    attempt,
+                    total_attempts,
+                    preview(system_prompt),
+                    preview(prompt),
+                )
                 response = await self.client.chat.completions.create(
                     model=self.model_name,
                     max_tokens=max_tokens,
@@ -80,13 +107,30 @@ class CloudAPIProvider(BaseLLM):
                 if content and content.strip():
                     return content.strip()
                 last_error = "пустой ответ модели"
-                print(f"⚠️ Пустой ответ LLM (попытка {attempt}/{total_attempts}).")
+                logger.warning(
+                    "⚠️ Пустой ответ LLM (попытка %d/%d).", attempt, total_attempts
+                )
             except Exception as ex:
                 last_error = f"{type(ex).__name__}: {ex}"
-                print(f"⚠️ Ошибка LLM (попытка {attempt}/{total_attempts}): {last_error}")
+                # logger.exception — только при последней попытке: иначе traceback
+                # от ретраев, которые заведомо повторятся, забивает лог.
+                if attempt < total_attempts:
+                    logger.warning(
+                        "⚠️ Ошибка LLM (попытка %d/%d): %s",
+                        attempt,
+                        total_attempts,
+                        last_error,
+                    )
+                else:
+                    logger.exception(
+                        "❌ Ошибка LLM (попытка %d/%d): %s",
+                        attempt,
+                        total_attempts,
+                        last_error,
+                    )
 
             if attempt < total_attempts:
                 await asyncio.sleep(self.retry_delay * attempt)
 
-        print(f"❌ LLM недоступна, запрос не выполнен: {last_error}")
+        logger.error("❌ LLM недоступна, запрос не выполнен: %s", last_error)
         return None

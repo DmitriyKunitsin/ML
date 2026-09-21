@@ -9,14 +9,15 @@
 """
 
 import asyncio
-import io
+import logging
 import os
+import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from unittest import mock
 
 import test_main
+from core.logging_setup import close_logging_handlers
 from test_main import (
     FINISH_OK,
     LIMIT_EXIT,
@@ -407,49 +408,96 @@ class TestSaveResults(unittest.TestCase):
 class TestMainIntegration(unittest.TestCase):
     """Полный main() с подменённым провайдером: без сети и без реальных затрат."""
 
+    def setUp(self):
+        # main() вызывает setup_logging(): хендлеры логгера меняются, поэтому
+        # сохраняем исходные и закрываем свои после теста. Временную папку
+        # создаём через mkdtemp + addCleanup: cleanup идёт ПОСЛЕ tearDown,
+        # то есть когда agent.log уже не заблокирован (иначе на Windows
+        # удаление падает с PermissionError).
+        self._root = logging.getLogger()
+        self._saved_handlers = self._root.handlers[:]
+        self._saved_level = self._root.level
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(self._cleanup_tmpdir)
+
+    def tearDown(self):
+        close_logging_handlers()
+        self._root.handlers[:] = self._saved_handlers
+        self._root.setLevel(self._saved_level)
+
+    def _cleanup_tmpdir(self):
+        close_logging_handlers()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _run_main(self, agents, capture=True):
+        """Прогоняет main() с заглушками.
+
+        capture=True перехватывает записи логгера test_main через assertLogs.
+        Для проверки ФАЙЛА перехват не нужен: assertLogs отключает propagate
+        у логгера test_main, и записи не доходят до файлового хендлера корня.
+        """
+        env = {
+            "PROJECT_DIR": self.tmpdir,
+            "LOG_DIR": os.path.join(self.tmpdir, "logs"),
+        }
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(test_main, "create_agents", return_value=agents):
+                with mock.patch.object(
+                    test_main, "CloudAPIProvider"
+                ) as provider_cls:
+                    if not capture:
+                        asyncio.run(test_main.main())
+                        return provider_cls, None
+                    with self.assertLogs("test_main", level="INFO") as captured:
+                        asyncio.run(test_main.main())
+        return provider_cls, captured
+
     def test_main_saves_results_and_returns(self):
         agents = build_agents(
             coder_default=VALID_PROJECT_SCANNER, tester_default=APPROVED
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.dict(os.environ, {"PROJECT_DIR": tmpdir}):
-                with mock.patch.object(
-                    test_main, "create_agents", return_value=agents
-                ):
-                    with mock.patch.object(
-                        test_main, "CloudAPIProvider"
-                    ) as provider_cls:
-                        buffer = io.StringIO()
-                        with redirect_stdout(buffer):
-                            asyncio.run(test_main.main())
 
-            provider_cls.assert_called_once()
-            output = buffer.getvalue()
-            self.assertIn("Пайплайн завершён успешно", output)
-            self.assertTrue(os.path.exists(os.path.join(tmpdir, "result.py")))
-            with open(
-                os.path.join(tmpdir, "result.py"), encoding="utf-8"
-            ) as handle:
-                self.assertEqual(handle.read(), VALID_PROJECT_SCANNER.strip())
+        provider_cls, captured = self._run_main(agents)
+
+        provider_cls.assert_called_once()
+        logs = "\n".join(captured.output)
+        self.assertIn("Пайплайн завершён успешно", logs)
+        self.assertIn("Старт пайплайна", logs)
+        result_path = os.path.join(self.tmpdir, "result.py")
+        self.assertTrue(os.path.exists(result_path))
+        with open(result_path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), VALID_PROJECT_SCANNER.strip())
 
     def test_main_terminates_when_tester_always_rejects(self):
         """Даже при вечных отклонениях main() обязан дойти до конца."""
         agents = build_agents(
             coder_default=VALID_PROJECT_SCANNER, tester_default=REJECTED
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.dict(os.environ, {"PROJECT_DIR": tmpdir}):
-                with mock.patch.object(
-                    test_main, "create_agents", return_value=agents
-                ):
-                    with mock.patch.object(test_main, "CloudAPIProvider"):
-                        buffer = io.StringIO()
-                        with redirect_stdout(buffer):
-                            asyncio.run(test_main.main())
 
-            output = buffer.getvalue()
-            self.assertIn("остановлен по лимиту попыток", output)
-            self.assertIn("Работа завершена", output)
+        _, captured = self._run_main(agents)
+
+        logs = "\n".join(captured.output)
+        self.assertIn("остановлен по лимиту попыток", logs)
+        self.assertIn("Работа завершена", logs)
+
+    def test_main_writes_log_file(self):
+        """Логи пишутся не только в консоль, но и в файл logs/agent.log."""
+        agents = build_agents(
+            coder_default=VALID_PROJECT_SCANNER, tester_default=APPROVED
+        )
+
+        self._run_main(agents, capture=False)
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        log_path = os.path.join(self.tmpdir, "logs", "agent.log")
+        with open(log_path, encoding="utf-8") as handle:
+            content = handle.read()
+
+        # DEBUG-детали шагов попадают в файл, даже если консоль на INFO.
+        self.assertIn("Шаг 6: проверка синтаксиса", content)
+        self.assertIn("Шаг 5: ответ кодера", content)
+        # Секреты в лог не попадают.
+        self.assertNotIn("cloud_key", content)
 
 
 if __name__ == "__main__":

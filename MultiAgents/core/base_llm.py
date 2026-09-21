@@ -1,7 +1,13 @@
 from abc import ABC, abstractmethod
 import asyncio
-import sys
+import logging
 import time
+
+logger = logging.getLogger(__name__)
+
+# Как часто таймер напоминает о себе в лог (сек). Пишем на уровне DEBUG:
+# в консоль (INFO) прогресс не сыплется, в файле видно, что запрос жив.
+PROGRESS_TICK_SECONDS = 15.0
 
 
 class BaseLLM(ABC):
@@ -11,17 +17,23 @@ class BaseLLM(ABC):
         self.timeout = timeout
 
     async def _track_time(self):
-        """Асинхронный таймер, запускаемый в фоне."""
-        start_time = time.time()
+        """Асинхронный таймер, запускаемый в фоне.
+
+        Раньше он перерисовывал строку в stdout («⏳ Генерация... 12.5 сек»).
+        Теперь это DEBUG-запись в файл раз в PROGRESS_TICK_SECONDS — консоль
+        остаётся чистой, а по логу видно, что долгий запрос не завис.
+        """
+        started_at = time.perf_counter()
         try:
             while True:
-                elapsed = time.time() - start_time
-                sys.stdout.write(f"\r   ⏳ Генерация... прошло {elapsed:.1f} сек")
-                sys.stdout.flush()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(PROGRESS_TICK_SECONDS)
+                logger.debug(
+                    "⏳ Генерация продолжается: %.1f сек (timeout=%.0f сек).",
+                    time.perf_counter() - started_at,
+                    self.timeout,
+                )
         except asyncio.CancelledError:
-            sys.stdout.write("\r" + " " * 40 + "\r")
-            sys.stdout.flush()
+            raise
 
     async def generate_with_timer(self, *args, **kwargs):
         """
@@ -29,16 +41,21 @@ class BaseLLM(ABC):
         и возвращает результат. Наследники должны реализовать _generate().
         """
         timer_task = asyncio.create_task(self._track_time())
-        start_call = time.time()
+        start_call = time.perf_counter()
 
         try:
             result = await self._generate(*args, **kwargs)
-            total_time = time.time() - start_call
-            print(f"   ⏱️ Время генерации: {total_time:.2f} сек")
+            logger.info(
+                "⏱️ Время генерации: %.2f сек.", time.perf_counter() - start_call
+            )
             return result
-        except Exception as e:
-            total_time = time.time() - start_call
-            print(f"❌ Ошибка: {e} (прошло {total_time:.2f} сек)")
+        except Exception:
+            # logger.exception приложит traceback целиком — собирать его вручную
+            # через str(e) (как было раньше) бессмысленно: теряется стек.
+            logger.exception(
+                "❌ Ошибка генерации (прошло %.2f сек).",
+                time.perf_counter() - start_call,
+            )
             return None
         finally:
             timer_task.cancel()
