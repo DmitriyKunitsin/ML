@@ -22,7 +22,7 @@ from utils.helpers import Helper
 # Логгер на модуль: в каждой записи видно, откуда она пришла (%(name)s).
 logger = logging.getLogger(__name__)
 
-MAX_REVIEW_ATTEMPTS = 5  # Максимальное количество правок (отдельно для ТЗ и для кода)
+MAX_REVIEW_ATTEMPTS = 50  # Максимальное количество правок (отдельно для ТЗ и для кода)
 MAX_SPEC_ATTEMPTS = 5  # Максимальное количество правок ТЗ
 
 # Целевой язык генерируемого кода: "python" (obsidian-скрипт из MY_PROMPT)
@@ -153,7 +153,9 @@ async def process_step_2_spec_writer(
     logger.info(
         "📋 Шаг 2: составление ТЗ (агент «%s»)", agents[AgentType.SPEC_WRITER].name
     )
-    logger.debug("📋 Шаг 2: пользовательская идея: %s", preview(context.get("user_idea")))
+    logger.debug(
+        "📋 Шаг 2: пользовательская идея: %s", preview(context.get("user_idea"))
+    )
     spec_text = await agents[AgentType.SPEC_WRITER].execute_task(
         prompt=f"Составь ТЗ для моей идеи : {context['user_idea']}",
         task_type="review",
@@ -162,7 +164,9 @@ async def process_step_2_spec_writer(
         logger.error("❌ Аналитик не вернул ТЗ (пустой ответ LLM). Прерываю пайплайн.")
         return LIMIT_EXIT
     context[AgentType.SPEC_WRITER] = spec_text
-    logger.info("✅ Шаг 2: ТЗ получено (%d симв.), перехожу к проверке.", len(spec_text))
+    logger.info(
+        "✅ Шаг 2: ТЗ получено (%d симв.), перехожу к проверке.", len(spec_text)
+    )
     logger.debug("📋 Шаг 2: ТЗ: %s", preview(spec_text))
     return 3  # next step 3
 
@@ -209,7 +213,8 @@ async def process_step_3_spec_reviewer(
         )
         if attempts >= MAX_SPEC_ATTEMPTS:
             logger.error(
-                "❌ Превышено максимальное количество правок ТЗ (%d).", MAX_SPEC_ATTEMPTS
+                "❌ Превышено максимальное количество правок ТЗ (%d).",
+                MAX_SPEC_ATTEMPTS,
             )
             return LIMIT_EXIT, attempts  # exit while
         context[AgentType.FEEDBACK] = feedback
@@ -281,7 +286,9 @@ async def process_step_5_coder(
         task_type="code",
     )
     if not code:
-        logger.error("❌ Программист не вернул код (пустой ответ LLM). Прерываю пайплайн.")
+        logger.error(
+            "❌ Программист не вернул код (пустой ответ LLM). Прерываю пайплайн."
+        )
         return LIMIT_EXIT
     # CODER_PROMPT обязывает модель выводить <verdict>...</verdict>:
     # без отрезания тега код не пройдёт проверку синтаксиса на шаге 6.
@@ -363,7 +370,9 @@ async def process_step_6_compiler(
         attempts += 1
         context[AgentType.COMPILER] = "Код пустой после очистки от markdown."
         if attempts >= MAX_REVIEW_ATTEMPTS:
-            logger.error("❌ Превышено максимальное количество правок кода (пустой код).")
+            logger.error(
+                "❌ Превышено максимальное количество правок кода (пустой код)."
+            )
             return LIMIT_EXIT, attempts
         return 5, attempts
 
@@ -378,7 +387,9 @@ async def process_step_6_compiler(
         attempts += 1
         context[AgentType.COMPILER] = feedback
         if attempts >= MAX_REVIEW_ATTEMPTS:
-            logger.error("❌ Превышено максимальное количество правок кода (компиляция).")
+            logger.error(
+                "❌ Превышено максимальное количество правок кода (компиляция)."
+            )
             return LIMIT_EXIT, attempts  # exit while
         return 5, attempts
 
