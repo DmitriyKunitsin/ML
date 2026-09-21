@@ -22,6 +22,16 @@ from utils.helpers import Helper
 # Логгер на модуль: в каждой записи видно, откуда она пришла (%(name)s).
 logger = logging.getLogger(__name__)
 
+# Общий анимированный статус «Работает…» — приём от пользователя: без него
+# экран замирает на время долгого запроса к LLM и кажется, что всё зависло.
+# Спиннер живёт в фоновом потоке и пишет в консоль (stdout), см. utils/progress_spinner.
+from utils.progress_spinner import notify as spinner_notify
+from utils.progress_spinner import stop as spinner_stop
+
+# Тесты и CI не выводят статус: спиннер пишет '\r' — мусор в протоколе.
+# Отключить можно через PROGRESS_SPINNER=0 (например, для CI).
+PROGRESS_SPINNER = os.getenv("PROGRESS_SPINNER", "1").lower() not in ("0", "false", "off")
+
 MAX_REVIEW_ATTEMPTS = 50  # Максимальное количество правок (отдельно для ТЗ и для кода)
 MAX_SPEC_ATTEMPTS = 5  # Максимальное количество правок ТЗ
 
@@ -463,6 +473,10 @@ async def main():
     spec_attempts = 0
     code_attempts = 0
     started_at = time.perf_counter()
+    # Приём от пользователя о «зависшем» пайплайне: включаем анимированный
+    # статус «Работает…» сразу после старта.
+    if PROGRESS_SPINNER:
+        spinner_notify("pipeline", "Работает… 0:00")
 
     logger.info(
         "🚀 Старт пайплайна: модель=%s, целевой язык=%s.",
@@ -515,6 +529,10 @@ async def main():
     finally:
         # Сохраняем всегда, чтобы не потерять ТЗ и код при падении
         save_results(context)
+        # Останавливаем анимацию «Работает…», чтобы финальные сообщения
+        # (время, путь к файлу лога) выглядели чисто, без «\r»-хвостов.
+        if PROGRESS_SPINNER:
+            spinner_stop()
 
     logger.info(
         "🎉 Работа завершена. Итоговый шаг: %d, время: %.2f сек.",

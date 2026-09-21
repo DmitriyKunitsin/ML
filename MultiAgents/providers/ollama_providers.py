@@ -1,4 +1,5 @@
 import logging
+import os
 
 import httpx
 from core.base_llm import BaseLLM
@@ -15,9 +16,13 @@ class AsyncOllamaClient(BaseLLM):
         base_url: str = "http://localhost:11434",
         boss_model: str = "llama3.1:8b-instruct-q4_K_M",
         worker_model: str = "codellama:7b-instruct-q4_K_M",
-        timeout: float = 900.0,  # 15 minut
+        timeout: float | None = None,
     ):
-        super().__init__(timeout=timeout)
+        # Локальная Ollama не подключена к интернету, но модель может думать
+        # долго. По умолчанию 15 минут; переопределить можно через LLM_TIMEOUT
+        # без правки кода — единообразно с облачным провайдером.
+        default_timeout = float(os.getenv("LLM_TIMEOUT", "900"))
+        super().__init__(timeout=timeout if timeout is not None else default_timeout)
         self.chat_url = f"{base_url.rstrip('/')}/api/chat"
         self.models = {"boss": boss_model, "worker": worker_model}
         # Имя основной модели нужно для логов BaseAgent (getattr llm.model_name).

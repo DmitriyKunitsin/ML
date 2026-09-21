@@ -1,7 +1,11 @@
-from abc import ABC, abstractmethod
 import asyncio
 import logging
 import time
+
+from abc import ABC, abstractmethod
+
+from utils.progress_spinner import notify as spinner_notify
+from utils.progress_spinner import stop as spinner_stop
 
 logger = logging.getLogger(__name__)
 
@@ -16,21 +20,26 @@ class BaseLLM(ABC):
     def __init__(self, timeout: float = 300.0):
         self.timeout = timeout
 
-    async def _track_time(self):
+    async def _track_time(self, context: str = ""):
         """Асинхронный таймер, запускаемый в фоне.
 
-        Раньше он перерисовывал строку в stdout («⏳ Генерация... 12.5 сек»).
-        Теперь это DEBUG-запись в файл раз в PROGRESS_TICK_SECONDS — консоль
-        остаётся чистой, а по логу видно, что долгий запрос не завис.
+        Каждые ``PROGRESS_TICK_SECONDS`` делает DEBUG-запись в файл («запрос
+        жив, уже N сек») и обновляет спиннер в консоли с живым временем
+        (``Работает… 0:12``). ``context`` — что именно выполняется.
         """
         started_at = time.perf_counter()
         try:
             while True:
                 await asyncio.sleep(PROGRESS_TICK_SECONDS)
+                elapsed = time.perf_counter() - started_at
                 logger.debug(
                     "⏳ Генерация продолжается: %.1f сек (timeout=%.0f сек).",
-                    time.perf_counter() - started_at,
+                    elapsed,
                     self.timeout,
+                )
+                spinner_notify(
+                    context or "LLM",
+                    f"Работает… {int(elapsed // 60)}:{int(elapsed % 60):02d}",
                 )
         except asyncio.CancelledError:
             raise
@@ -63,6 +72,9 @@ class BaseLLM(ABC):
                 await timer_task
             except asyncio.CancelledError:
                 pass
+            # Обновляем спиннер «Работает…», чтобы финальные сообщения
+            # (время, пути файлов) выглядели чисто, без "\r"-хвостов.
+            spinner_stop()
 
     @abstractmethod
     async def _generate(self, *args, **kwargs):

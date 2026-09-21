@@ -78,8 +78,14 @@ def build_agents(
     }
 
 
-def run_pipeline(agents, context, max_iterations=100):
-    """Прогоняет стейт-машину main() без LLM. Возвращает (шаг, число итераций)."""
+def run_pipeline(agents, context, max_iterations=3 * MAX_REVIEW_ATTEMPTS + 10):
+    """Прогоняет стейт-машину main() без LLM. Возвращает (шаг, число итераций).
+
+    max_iterations по умолчанию считаем от MAX_REVIEW_ATTEMPTS: каждый «заход»
+    правки кода — это минимум шаги 5->6->7 (3 итерации), поэтому лимит должен
+    покрывать 3 * MAX_REVIEW_ATTEMPTS, иначе стейт-машина выйдет по лимиту
+    раньше, чем сработает счётчик правок кода.
+    """
 
     async def _run():
         step = 2
@@ -195,7 +201,9 @@ class TestPipelineTermination(unittest.TestCase):
         self.assertEqual(step, LIMIT_EXIT)
         self.assertEqual(len(agents[AgentType.CODER].calls), MAX_REVIEW_ATTEMPTS)
         self.assertEqual(len(agents[AgentType.TESTER].calls), MAX_REVIEW_ATTEMPTS)
-        self.assertLess(iterations, 40)
+        # При 30+ правках итераций больше 40, поэтому проверяем не абсолют,
+        # а то, что цикл завершился примерно за 3 шага на попытку правки.
+        self.assertLess(iterations, 3 * MAX_REVIEW_ATTEMPTS + 10)
 
     def test_perpetual_syntax_error_terminates(self):
         """Кодер всегда отдаёт код с синтаксической ошибкой."""
@@ -206,7 +214,7 @@ class TestPipelineTermination(unittest.TestCase):
 
         self.assertEqual(step, LIMIT_EXIT)
         self.assertEqual(len(agents[AgentType.CODER].calls), MAX_REVIEW_ATTEMPTS)
-        self.assertLess(iterations, 40)
+        self.assertLess(iterations, 3 * MAX_REVIEW_ATTEMPTS + 10)
 
     def test_empty_code_terminates(self):
         """Кодер возвращает None (ошибка LLM) — выход, а не бесконечный цикл."""
@@ -498,6 +506,117 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("Шаг 5: ответ кодера", content)
         # Секреты в лог не попадают.
         self.assertNotIn("cloud_key", content)
+
+
+class TestProgressSpinner(unittest.TestCase):
+    """Спиннер: idempotent stop(), тихая работа в не-TTY и без вывода."""
+
+    @classmethod
+    def setUpClass(cls):
+        import utils.progress_spinner as spinner
+
+        cls.spinner = spinner
+        # Гарантируем чистый старт: если кто-то успел запустить спиннер
+        # (атексит/прошлый тест), останавливаем и сбрасываем в исходное.
+        spinner.stop()
+        spinner.PROGRESS_SPINNER_STARTED = False
+        spinner._shutdown = False
+        spinner._stop_event.clear()
+        # Пока идёт класс — спиннер пишет не в реальный stdout (мусор в
+        # протоколе unittest), а в корзину. Конкретные проверки выводов
+        # делаются через свой _stdout_write внутри теста.
+        cls._saved_stdout_write = spinner._stdout_write
+        spinner._stdout_write = lambda text: len(text)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.spinner.stop()
+        cls.spinner._stdout_write = cls._saved_stdout_write
+
+    def tearDown(self):
+        self.spinner.stop()
+        self.spinner.PROGRESS_SPINNER_STARTED = False
+        self.spinner._shutdown = False
+        self.spinner._stop_event.clear()
+
+    def test_spinner_noop_without_tty(self):
+        """В не-TTY без перехвата stdout спиннер молча не запускается."""
+        with mock.patch.object(self.spinner, "_stdout_write", None):
+            self.spinner.notify("pipeline", "Работает… 0:00")
+        self.assertFalse(self.spinner.PROGRESS_SPINNER_STARTED)
+
+    def test_spinner_writes_when_stdout_captured(self):
+        """Если вывод перехвачен (_stdout_write), спиннер пишет кадры в него."""
+        written = []
+
+        def fake_write(text: str) -> int:
+            written.append(text)
+            return len(text)
+
+        self.spinner._stdout_write = fake_write
+        try:
+            self.spinner.notify("pipeline", "Работает… 0:00")
+            self.spinner.stop()
+            joined = "".join(written)
+            self.assertIn("Работает…", joined)
+        finally:
+            # Вернуть корзину класса (не None!), чтобы финальный кадр stop()
+            # не ушёл в реальный stdout.
+            self.spinner._stdout_write = self._saved_stdout_write
+
+    def test_stop_is_idempotent(self):
+        """Повторные вызовы stop() не падают и не тянут таймаут."""
+        self.spinner.notify("pipeline", "Работает… 0:00")
+        self.spinner.stop()
+        self.spinner.stop()
+        self.spinner.stop()
+        self.assertFalse(self.spinner.PROGRESS_SPINNER_STARTED)
+
+    def test_notify_after_stop_is_safe(self):
+        """notify() после stop() не возобновляет поток."""
+        self.spinner.notify("pipeline", "Работает… 0:00")
+        self.spinner.stop()
+        self.spinner.notify("pipeline", "Работает… 0:01")
+        self.assertFalse(self.spinner.PROGRESS_SPINNER_STARTED)
+
+
+class TestLLMTimeout(unittest.TestCase):
+    """LLM_TIMEOUT env: переопределяет таймаут у обоих провайдеров."""
+
+    def test_cloud_provider_reads_llm_timeout_env(self):
+        import providers.cloud_api_providers as prov
+
+        started = os.environ.get("LLM_TIMEOUT")
+        try:
+            os.environ["LLM_TIMEOUT"] = "123.5"
+            with mock.patch.object(prov, "cloud_key", "test-key"), mock.patch.object(
+                prov, "AsyncOpenAI"
+            ) as client_cls:
+                provider = prov.CloudAPIProvider(model_name="test-model")
+            self.assertEqual(provider.timeout, 123.5)
+            client_cls.assert_called_once()
+        finally:
+            if started is None:
+                os.environ.pop("LLM_TIMEOUT", None)
+            else:
+                os.environ["LLM_TIMEOUT"] = started
+
+    def test_ollama_provider_reads_llm_timeout_env(self):
+        import providers.ollama_providers as prov
+
+        started = os.environ.get("LLM_TIMEOUT")
+        try:
+            os.environ["LLM_TIMEOUT"] = "321"
+            # __init__ не ходит в сеть (клиент создаётся в _generate),
+            # поэтому мокаем только глобальный httpx на всякий случай.
+            with mock.patch.object(prov, "httpx") as httpx_mod:
+                provider = prov.AsyncOllamaClient(base_url="http://x")
+            self.assertEqual(provider.timeout, 321.0)
+        finally:
+            if started is None:
+                os.environ.pop("LLM_TIMEOUT", None)
+            else:
+                os.environ["LLM_TIMEOUT"] = started
 
 
 if __name__ == "__main__":

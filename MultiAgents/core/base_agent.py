@@ -6,6 +6,7 @@ import os
 
 from core.base_llm import BaseLLM
 from core.logging_setup import preview
+from utils.progress_spinner import notify as spinner_notify
 
 # Принудительно заставляем tiktoken не лезть в сеть, если файл уже скачан
 os.environ["TIKTOKEN_CACHE_DIR"] = "./tiktoken_cache"
@@ -42,6 +43,7 @@ class BaseAgent:
         )
         logger.debug("🤖 Агент «%s»: system-промпт: %s", self.name, preview(self.role_prompt))
         logger.debug("🤖 Агент «%s»: user-промпт: %s", self.name, preview(prompt))
+        spinner_notify(self.name, f"Агент «{self.name}» выполняет задачу…")
 
         started_at = time.perf_counter()
         try:

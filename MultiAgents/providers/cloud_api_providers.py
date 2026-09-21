@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import random
 
 from openai import AsyncOpenAI
 from config.key_llm import cloud_key
@@ -17,11 +19,14 @@ class CloudAPIProvider(BaseLLM):
         self,
         model_name: str,
         url: str = "https://foundation-models.api.cloud.ru/v1",
-        timeout: float = 180.0,
+        timeout: float | None = None,
         max_retries: int = 2,
         retry_delay: float = 2.0,
     ):
-        super().__init__(timeout=timeout)
+        # Облако умеет думать дольше минуты: ставим 10 минут по умолчанию,
+        # а переопределять можно через LLM_TIMEOUT без правки кода.
+        default_timeout = float(os.getenv("LLM_TIMEOUT", "600"))
+        super().__init__(timeout=timeout if timeout is not None else default_timeout)
         self.model_name = model_name
         self.url = url
         self.max_retries = max_retries  # Сколько раз повторить запрос при ошибке
@@ -130,7 +135,9 @@ class CloudAPIProvider(BaseLLM):
                     )
 
             if attempt < total_attempts:
-                await asyncio.sleep(self.retry_delay * attempt)
+                # Случайная пауза (не суммарная экспонента): если в будущем
+                # появятся параллельные агенты — попытки не совпадут по времени.
+                await asyncio.sleep(self.retry_delay + random.uniform(0, self.retry_delay))
 
         logger.error("❌ LLM недоступна, запрос не выполнен: %s", last_error)
         return None
