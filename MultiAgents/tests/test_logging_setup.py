@@ -20,6 +20,7 @@ tearDown, когда хендлеры уже закрыты (с TemporaryDirecto
 """
 
 import logging
+import logging.handlers
 import os
 import re
 import shutil
@@ -41,6 +42,8 @@ from core.logging_setup import (
     preview,
     register_agent_logger,
     setup_logging,
+    MAX_LOG_BYTES,
+    LOG_BACKUP_COUNT,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -428,6 +431,25 @@ class TestAgentRunLogs(LoggingTestBase):
 
         run_content = self._read_log(log_dir)
         self.assertNotIn("уникальная-метка-агента", run_content)
+
+    def test_agent_logger_uses_rotating_file_handler(self):
+        """Файл агента ограничен по размеру: RotatingFileHandler с лимитами.
+
+        Раньше здесь был обычный FileHandler, из-за чего протоколы агентов
+        раздувались на 5.6 МБ за один прогон пайплайна."""
+        log_dir = self._setup()
+
+        register_agent_logger("agent.coder", "Программист", file_stem="coder")
+        agent = logging.getLogger("agent.coder")
+
+        rotating = [
+            h
+            for h in agent.handlers
+            if isinstance(h, logging.handlers.RotatingFileHandler)
+        ]
+        self.assertTrue(rotating, "агент-хендлер должен быть RotatingFileHandler")
+        self.assertEqual(rotating[0].maxBytes, MAX_LOG_BYTES)
+        self.assertEqual(rotating[0].backupCount, LOG_BACKUP_COUNT)
 
     def test_close_run_loggers_removes_agent_handlers(self):
         log_dir = self._setup()

@@ -125,9 +125,16 @@ class Helper:
 
     @staticmethod
     def validate_syntax_python(code_string: str) -> tuple[bool, str | None]:
-        """Валидация пайтона"""
+        """Валидация пайтона (строгий режим через compile()).
+
+        Используем compile() вместо ast.parse(): первый ловит НЕ только
+        SyntaxError, но и ошибки, которые ast.parse пропускает — например,
+        ``await`` вне async-функции, ``return`` вне функции, невалидные
+        f-string-выражения. Обрезанный код с такими конструкциями проходил
+        ast.parse и уходил дальше по пайплайну.
+        """
         try:
-            ast.parse(code_string)
+            compile(code_string, "<coder_output>", "exec")
             logger.debug("🔧 Синтаксис Python корректен (%d симв.).", len(code_string))
             return True, None
         except SyntaxError as e:

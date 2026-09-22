@@ -559,6 +559,51 @@ class TestSaveResults(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PROJECT_DIR": bad_dir}):
                 self.assertIsNone(test_main.save_results(context))
 
+    def test_escalation_writes_escalation_md(self):
+        """При escalation=True создаётся escalation.md с причиной и артефактами."""
+        context = new_context()
+        context[AgentType.SPEC_WRITER] = "ТЗ проекта."
+        context[AgentType.CODER] = VALID_PROJECT_SCANNER
+        context[AgentType.TESTER] = "Критическая: код не работает."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"PROJECT_DIR": tmpdir}):
+                test_main.save_results(context, escalation=True)
+
+            with open(
+                os.path.join(tmpdir, "escalation.md"), encoding="utf-8"
+            ) as handle:
+                content = handle.read()
+            self.assertIn("Эскалация человеку", content)
+            self.assertIn("Критическая: код не работает.", content)
+            self.assertIn("result.py", content)
+
+    def test_no_escalation_file_without_flag(self):
+        context = new_context()
+        context[AgentType.SPEC_WRITER] = "ТЗ."
+        context[AgentType.CODER] = VALID_PROJECT_SCANNER
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"PROJECT_DIR": tmpdir}):
+                test_main.save_results(context)  # escalation=False по умолчанию
+
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "escalation.md")))
+
+    def test_save_is_atomic_and_leaves_no_tmp_files(self):
+        """Запись атомарная: в каталоге после сохранения нет *.tmp мусора."""
+        context = new_context()
+        context[AgentType.SPEC_WRITER] = "ТЗ."
+        context[AgentType.CODER] = VALID_PROJECT_SCANNER
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"PROJECT_DIR": tmpdir}):
+                test_main.save_results(context)
+
+            leftovers = [
+                name for name in os.listdir(tmpdir) if name.endswith(".tmp")
+            ]
+            self.assertEqual(leftovers, [])
+
 
 class TestMainIntegration(unittest.TestCase):
     """Полный main() с подменённым провайдером: без сети и без реальных затрат."""

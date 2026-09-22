@@ -148,8 +148,11 @@ def register_agent_logger(
     except OSError:
         return
 
-    handler = logging.FileHandler(
-        agents_dir / f"{stem}.log", encoding="utf-8"
+    handler = logging.handlers.RotatingFileHandler(
+        agents_dir / f"{stem}.log",
+        maxBytes=MAX_LOG_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
     )
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(

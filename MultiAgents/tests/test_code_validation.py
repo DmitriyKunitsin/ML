@@ -178,16 +178,15 @@ class TestValidateSyntaxPython(unittest.TestCase):
         self.assertIsInstance(ok, bool)
         self.assertIsInstance(error, (str, type(None)))
 
-    def test_compile_only_error_is_currently_missed(self):
-        """Документируем ограничение: ast.parse() пропускает 'await' вне функции.
+    def test_compile_only_error_is_detected(self):
+        """compile() находит 'await' вне функции, который ast.parse пропускает.
 
-        Строгий разбор через compile() такую ошибку находит, поэтому тест
-        фиксирует разницу между парсингом и компиляцией.
+        Обрезанный код с такими конструкциями проходил старую проверку и
+        уходил дальше по пайплайну — отсюда «молчаливый» цикл.
         """
-        ok, _ = Helper.validate_syntax_python(COMPILE_ONLY_ERROR)
-        self.assertTrue(ok)  # текущее поведение
-        with self.assertRaises(SyntaxError):
-            compile(COMPILE_ONLY_ERROR, "<coder_output>", "exec")
+        ok, error = Helper.validate_syntax_python(COMPILE_ONLY_ERROR)
+        self.assertFalse(ok)
+        self.assertIsNotNone(error)
 
 
 class TestCheckCodeSyntax(unittest.TestCase):

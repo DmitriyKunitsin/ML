@@ -666,8 +666,37 @@ async def process_step_6_compiler(
     return 7, attempts
 
 
-def save_results(context: dict) -> str | None:
-    """Сохраняет ТЗ и код в файлы. Вызывается всегда, даже при падении."""
+def _atomic_write(path: str, content: str) -> None:
+    """Пишет файл атомарно: сначала во временный файл, затем переименование.
+
+    Если процесс упадёт посреди записи, целевой файл не останется
+    «полупустым» — пайплайн сохраняет артефакты, и читатель не должен
+    увидеть оборванный на середине JSON/код.
+    """
+    import tempfile
+
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        # Не оставляем мусорный tmp-файл.
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def save_results(context: dict, escalation: bool = False) -> str | None:
+    """Сохраняет ТЗ, код и фидбек в файлы. Вызывается всегда, даже при падении.
+
+    ``escalation=True`` — пайплайн остановлен по лимиту правок: пишем
+    ``escalation.md`` с пояснением для человека и ссылками на артефакты.
+    Записи атомарные (см. ``_atomic_write``).
+    """
     project_dir = os.getenv("PROJECT_DIR", r"C:\Work\Source-NSU\ML\ResultSoft")
     try:
         os.makedirs(project_dir, exist_ok=True)
@@ -676,20 +705,32 @@ def save_results(context: dict) -> str | None:
         code_text = context.get(AgentType.CODER) or ""
         code_ext = CODE_EXTENSIONS.get(TARGET_LANG, "txt")
 
-        with open(os.path.join(project_dir, "TZ.txt"), "w", encoding="utf-8") as f:
-            f.write(tz_text)
-
-        with open(
-            os.path.join(project_dir, f"result.{code_ext}"), "w", encoding="utf-8"
-        ) as f:
-            f.write(code_text)
+        _atomic_write(os.path.join(project_dir, "TZ.txt"), tz_text)
+        _atomic_write(os.path.join(project_dir, f"result.{code_ext}"), code_text)
 
         feedback_text = context.get(AgentType.COMPILER) or context.get(AgentType.TESTER)
         if feedback_text:
-            with open(
-                os.path.join(project_dir, "Review_Feedback.txt"), "w", encoding="utf-8"
-            ) as f:
-                f.write(feedback_text)
+            _atomic_write(
+                os.path.join(project_dir, "Review_Feedback.txt"), feedback_text
+            )
+
+        if escalation:
+            reason = feedback_text or (
+                "Код так и не был согласован тестировщиком, деталей нет."
+            )
+            _atomic_write(
+                os.path.join(project_dir, "escalation.md"),
+                (
+                    "# Эскалация человеку\n\n"
+                    "Пайплайн исчерпал лимит попыток и НЕ смог согласовать код "
+                    "автоматически. Требуется ручное вмешательство.\n\n"
+                    "## Причина остановки\n"
+                    f"{reason}\n\n"
+                    "## Артефакты\n"
+                    f"- ТЗ: `TZ.txt`\n"
+                    f"- Код: `result.{code_ext}`\n"
+                ),
+            )
 
         logger.info("✅ Проект сохранён в %s", project_dir)
         logger.info("📄 ТЗ: %s", os.path.join(project_dir, "TZ.txt"))
@@ -697,6 +738,11 @@ def save_results(context: dict) -> str | None:
         if feedback_text:
             logger.info(
                 "📄 Замечания: %s", os.path.join(project_dir, "Review_Feedback.txt")
+            )
+        if escalation:
+            logger.info(
+                "🚨 Эскалация человеку: %s",
+                os.path.join(project_dir, "escalation.md"),
             )
         return project_dir
     except OSError:
@@ -789,8 +835,9 @@ async def main():
         logger.exception("❌ Пайплайн упал с ошибкой (шаг %d).", step)
         raise
     finally:
-        # Сохраняем всегда, чтобы не потерять ТЗ и код при падении
-        save_results(context)
+        # Сохраняем всегда, чтобы не потерять ТЗ и код при падении.
+        # Если пайплайн вышел по лимиту правок — дописываем escalation.md.
+        save_results(context, escalation=(step == LIMIT_EXIT))
         # Останавливаем анимацию «Работает…», чтобы финальные сообщения
         # (время, путь к файлу лога) выглядели чисто, без «\r»-хвостов.
         if PROGRESS_SPINNER:
