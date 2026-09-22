@@ -762,5 +762,61 @@ class TestTesterPromptCriteria(unittest.TestCase):
         self.assertIn("Ничего не должно идти после него", TESTER_PROMPT)
 
 
+class TestPromptsByTarget(unittest.TestCase):
+    """Промпты агентов выбираются по TARGET_LANG (PROMPTS_BY_TARGET)."""
+
+    def test_default_target_is_python(self):
+        import test_main
+
+        self.assertEqual(test_main.TARGET_LANG, "python")
+
+    def test_python_profile_has_avr_free_compiler(self):
+        from config.prompts import PROMPTS_BY_TARGET
+
+        compiler = PROMPTS_BY_TARGET["python"]["compiler"]
+        self.assertNotIn("avr-g++", compiler)
+        self.assertIn("Python", compiler)
+        self.assertIn("<verdict>", compiler)
+
+    def test_cpp_profile_keeps_arduino_compiler(self):
+        from config.prompts import PROMPTS_BY_TARGET
+
+        compiler = PROMPTS_BY_TARGET["cpp"]["compiler"]
+        self.assertIn("avr-g++", compiler)
+        self.assertIn("<verdict>", compiler)
+
+    def test_cpp_coder_outputs_arduino_sketch(self):
+        from config.prompts import PROMPTS_BY_TARGET
+
+        coder = PROMPTS_BY_TARGET["cpp"]["coder"]
+        self.assertIn("Arduino", coder)
+        self.assertIn("setup/loop", coder)
+
+    def test_create_agents_uses_python_profile_by_default(self):
+        import test_main
+
+        class _StubLLM:
+            model_name = "stub"
+
+        agents = test_main.create_agents(_StubLLM())
+        self.assertNotIn(
+            "avr-g++", agents[test_main.AgentType.COMPILER].role_prompt
+        )
+
+    def test_create_agents_uses_cpp_profile_for_cpp(self):
+        import test_main
+
+        class _StubLLM:
+            model_name = "stub"
+
+        original = test_main.TARGET_LANG
+        test_main.TARGET_LANG = "cpp"
+        try:
+            agents = test_main.create_agents(_StubLLM())
+        finally:
+            test_main.TARGET_LANG = original
+        self.assertIn("avr-g++", agents[test_main.AgentType.COMPILER].role_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

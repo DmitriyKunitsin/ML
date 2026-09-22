@@ -22,6 +22,7 @@ from config.prompts import (
     SPEC_WRITER_PROMPT,
     SPEC_REVIEWER_PROMPT,
     MY_PROMPT,
+    PROMPTS_BY_TARGET,
 )
 from utils.helpers import Helper
 
@@ -83,36 +84,42 @@ class AgentType(str, Enum):
 
 
 def create_agents(llm_client) -> dict[str, BaseAgent]:
-    """Фабрика для создания и инициализации всех агентов системы."""
+    """Фабрика для создания и инициализации всех агентов системы.
+
+    Роли выбираются из PROMPTS_BY_TARGET по TARGET_LANG: раньше промпты были
+    жёстко прибиты под Arduino (compiler/avr-g++), хотя дефолтный язык —
+    python. Теперь кодер/компилятор получают профиль под целевой язык.
+    """
+    prompts = PROMPTS_BY_TARGET.get(TARGET_LANG, PROMPTS_BY_TARGET["python"])
     return {
         AgentType.SPEC_WRITER: BaseAgent(  # Шаг 2
             name_agent="Системный аналитик",
-            role_prompt=SPEC_WRITER_PROMPT,
+            role_prompt=prompts["spec_writer"],
             llm=llm_client,
         ),
         AgentType.SPEC_REVIEWER: BaseAgent(  # Шаг 3
             name_agent="Главный валидатор",
-            role_prompt=SPEC_REVIEWER_PROMPT,
+            role_prompt=prompts["spec_reviewer"],
             llm=llm_client,
         ),
         AgentType.ARHITEKTOR: BaseAgent(  # Шаг 4
             name_agent="Архитектор",
-            role_prompt=ARHITEKTOR_PROMPT,
+            role_prompt=prompts["arhitektor"],
             llm=llm_client,
         ),
         AgentType.CODER: BaseAgent(  # Шаг 5
             name_agent="Программист",
-            role_prompt=CODER_PROMPT,
+            role_prompt=prompts["coder"],
             llm=llm_client,
         ),
         AgentType.TESTER: BaseAgent(  # Шаг 6
             name_agent="Тестировщик",
-            role_prompt=TESTER_PROMPT,
+            role_prompt=prompts["tester"],
             llm=llm_client,
         ),
         AgentType.COMPILER: BaseAgent(  # Шаг 7
             name_agent="Компилятор",
-            role_prompt=COMPILER_AGENT_PROMPT,
+            role_prompt=prompts["compiler"],
             llm=llm_client,
         ),
     }
