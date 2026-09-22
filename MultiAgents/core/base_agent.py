@@ -137,12 +137,40 @@ class BaseAgent:
 
     async def execute_task(self, prompt: str, task_type: str = "chat") -> str | None:
         """Выполняет задачу, передавая ее llm"""
-        # context_limit = await self.llm._get_context_limit(task_type)
-        # if not self.validate_prompt(prompt, context_limit):
-        #     raise ValueError(
-        #         f"Ошибка: Промпт для агента '{self.name}' слишком огромный ({self.count_tokens(self.role_prompt + prompt)} токенов)! "
-        #         f"Он превышает безопасный лимит контекста ({context_limit - SAFE_LIMIT} токенов)."
-        #     )
+        # Проверяем, что промпт (роль + запрос) влезает в контекст модели.
+        # Раньше эта проверка была закомментирована, из-за чего разросшиеся
+        # промпты кодера (ТЗ + архитектура + предыдущий код + фидбеки) молча
+        # переполняли контекст, а модель отвечала обрезанным кодом.
+        context_limit = None
+        prompt_tokens = None
+        try:
+            context_limit = await self.llm._get_context_limit(task_type)
+        except Exception:
+            logger.warning(
+                "⚠️ [%s] Провайдер не смог сообщить лимит контекста — "
+                "пропускаю валидацию размера промпта.",
+                self.name,
+            )
+        if context_limit is not None:
+            if not self.validate_prompt(prompt, context_limit):
+                # НЕ роняем пайплайн (чтобы не сломать сценарий восстановления
+                # после обрыва), но логируем причину: провайдеру будет
+                # передано меньше токенов на генерацию, а если промпт больше
+                # контекста — запрос всё равно упрётся в обрезку.
+                logger.error(
+                    "❌ [%s] Промпт слишком огромный (%d токенов > %d доступно). "
+                    "Вероятен обрыв ответа по max_tokens: эскалация или повтор.",
+                    self.name,
+                    self.count_tokens(self.role_prompt + prompt),
+                    (context_limit or 0) - SAFE_LIMIT,
+                )
+            # Точный счётчик токенов промпта для динамического max_tokens:
+            # провайдеру нужно знать, сколько места в контексте осталось.
+            try:
+                prompt_tokens = self.count_tokens(self.role_prompt + prompt)
+            except Exception:
+                prompt_tokens = None
+
         model = getattr(self.llm, "model_name", type(self.llm).__name__)
         logger.info(
             "🤖 Агент «%s»: старт задачи (task_type=%s, модель=%s).",
@@ -168,6 +196,7 @@ class BaseAgent:
                 prompt=prompt,
                 system_prompt=self.role_prompt,
                 task_type=task_type,
+                prompt_tokens=prompt_tokens,
             )
         except Exception:
             # logger.exception сам приложит traceback — руками его собирать не нужно.
@@ -228,7 +257,7 @@ class BaseAgent:
         )
         """
 
-    def count_tokens(sels, text: str) -> int:
+    def count_tokens(self, text: str) -> int:
         encoding = tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
 
@@ -237,7 +266,7 @@ class BaseAgent:
         total_text = self.role_prompt + prompt
         prompt_tokens = self.count_tokens(total_text)
 
-        # Задаем безопасный порог (оставляем минимум 2000 токенов на генерацию ответа модели)
+        # Задаем безопасный порог (оставляем SAFE_LIMIT токенов на генерацию ответа модели)
         available_space = context_limit - SAFE_LIMIT
 
         logger.debug(

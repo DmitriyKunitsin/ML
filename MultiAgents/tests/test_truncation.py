@@ -15,6 +15,7 @@
 
 import asyncio
 import unittest
+from unittest import mock
 
 import test_main
 from core.llm_types import LLMResponse, coerce_response, to_text
@@ -206,5 +207,151 @@ class TestStep5TruncationHandling(unittest.TestCase):
         self.assertEqual(len(agents[AgentType.CODER].calls), 1)
 
 
+class TestValidatePrompt(unittest.TestCase):
+    """BaseAgent.validate_prompt: переполнение контекста должно детектиться."""
+
+    def _make_agent(self, role="Система", context_limit=16384):
+        llm = type(
+            "StubLLM",
+            (),
+            {"model_name": "stub", "_get_context_limit": lambda self, t: context_limit},
+        )()
+        return test_main.BaseAgent(
+            name_agent="Тест", role_prompt=role, llm=llm  # type: ignore[arg-type]
+        )
+
+    def test_tiny_prompt_fits(self):
+        agent = self._make_agent()
+        self.assertTrue(agent.validate_prompt("Короткий запрос", 16384))
+
+    def test_huge_prompt_does_not_fit(self):
+        agent = self._make_agent(context_limit=4096)
+        self.assertFalse(agent.validate_prompt("x" * 100_000, 4096))
+
+
+class TestDynamicTokenBudget(unittest.TestCase):
+    """max_tokens/num_predict адаптируются к фактическому размеру промпта.
+
+    Если этого не сделать, разросшийся промпт кодера «съедает» контекст,
+    а модель обрезается по max_tokens посреди ответа.
+    """
+
+    def _make_cloud_provider(self):
+        import providers.cloud_api_providers as prov
+
+        provider = prov.CloudAPIProvider.__new__(prov.CloudAPIProvider)
+        provider.model_name = "test-model"
+        provider.timeout = 60
+        provider.max_retries = 0
+        provider.retry_delay = 0
+        provider.client = mock.MagicMock()
+        provider._task_configs = {
+            "code": (32768, 8192, 0.2),
+            "chat": (16384, 4096, 0.5),
+        }
+        provider._default_config = (16384, 4096, 0.5)
+        return provider
+
+    def _fake_api_response(self, content="ok", finish_reason="stop"):
+        import types
+
+        choice = types.SimpleNamespace(
+            message=types.SimpleNamespace(content=content),
+            finish_reason=finish_reason,
+        )
+        usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    def test_cloud_max_tokens_shrinks_on_large_prompt(self):
+        import asyncio
+
+        provider = self._make_cloud_provider()
+        provider.client.chat.completions.create = mock.AsyncMock(
+            return_value=self._fake_api_response()
+        )
+
+        asyncio.run(
+            provider._generate(
+                prompt="p", system_prompt="s", task_type="code", prompt_tokens=30_000
+            )
+        )
+
+        call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+        # 32768 (контекст) - 2000 (SAFE_LIMIT) - 30000 (промпт) = 768
+        self.assertEqual(call_kwargs["max_tokens"], 768)
+
+    def test_cloud_max_tokens_caps_at_config_when_prompt_small(self):
+        import asyncio
+
+        provider = self._make_cloud_provider()
+        provider.client.chat.completions.create = mock.AsyncMock(
+            return_value=self._fake_api_response()
+        )
+
+        asyncio.run(
+            provider._generate(
+                prompt="p", system_prompt="s", task_type="code", prompt_tokens=1_000
+            )
+        )
+
+        call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+        # min(8192, 32768-2000-1000=29768) = 8192
+        self.assertEqual(call_kwargs["max_tokens"], 8192)
+
+    def test_cloud_without_prompt_tokens_keeps_config(self):
+        import asyncio
+
+        provider = self._make_cloud_provider()
+        provider.client.chat.completions.create = mock.AsyncMock(
+            return_value=self._fake_api_response()
+        )
+
+        asyncio.run(provider._generate(prompt="p", system_prompt="s", task_type="code"))
+
+        call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs["max_tokens"], 8192)
+
+    def test_ollama_num_predict_shrinks_on_large_prompt(self):
+        import asyncio
+
+        import providers.ollama_providers as prov
+
+        provider = prov.AsyncOllamaClient.__new__(prov.AsyncOllamaClient)
+        provider.timeout = 60
+        provider.chat_url = "http://x/api/chat"
+        provider._task_configs = {
+            "code": ("model", 16384, 8192, 0.1),
+        }
+        provider._default_config = ("model", 8192, 64, 0.5)
+
+        sent = {}
+
+        class _FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "message": {"content": "ok"},
+                    "done_reason": "stop",
+                    "prompt_eval_count": 10,
+                    "eval_count": 5,
+                }
+
+        async def _fake_post(url, json):
+            sent["payload"] = json
+            return _FakeResponse()
+
+        with mock.patch.object(prov.httpx, "AsyncClient") as client_cls:
+            client_cls.return_value.__aenter__.return_value.post = _fake_post
+            asyncio.run(
+                provider._generate(
+                    prompt="p", system_prompt="s", task_type="code", prompt_tokens=15_000
+                )
+            )
+
+        num_predict = sent["payload"]["options"]["num_predict"]
+        # 16384 (num_ctx) - 2000 (SAFE_LIMIT) - 15000 (промпт) = -616 -> max(1, ...) = 1
+        self.assertEqual(num_predict, 1)
 if __name__ == "__main__":
     unittest.main()

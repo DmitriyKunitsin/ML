@@ -3,6 +3,7 @@ import os
 
 import httpx
 from core.base_llm import BaseLLM
+from core.base_agent import SAFE_LIMIT
 from core.llm_types import LLMResponse
 from core.logging_setup import preview
 
@@ -52,6 +53,7 @@ class AsyncOllamaClient(BaseLLM):
         prompt: str,
         system_prompt: str = "",
         task_type: str = "chat",
+        **kwargs,
     ) -> LLMResponse | None:
         """Реализация _generate() для Ollama.
 
@@ -60,8 +62,15 @@ class AsyncOllamaClient(BaseLLM):
         нельзя подавать в sandbox/ревью — пайплайн должен знать об обрезке.
         """
         model_name, ctx, predict, temp = self._get_config(task_type)
+        # Динамический num_predict: не больше, чем реально осталось места
+        # в контексте (num_ctx) после промпта. Иначе модель обрежется по
+        # num_predict раньше, чем допишет ответ.
+        prompt_tokens_observed = kwargs.get("prompt_tokens")
+        if prompt_tokens_observed is not None:
+            predict = min(predict, max(1, ctx - SAFE_LIMIT - prompt_tokens_observed))
         logger.debug(
-            "🤖 Параметры вызова Ollama: модель=%s, task_type=%s, num_ctx=%s, num_predict=%s, temperature=%s.",
+            "🤖 Параметры вызова Ollama: модель=%s, task_type=%s, num_ctx=%s, "
+            "num_predict=%s (динамический), temperature=%s.",
             model_name,
             task_type,
             ctx,

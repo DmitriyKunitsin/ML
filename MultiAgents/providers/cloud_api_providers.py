@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from config.key_llm import cloud_key
 
 from core.base_llm import BaseLLM
+from core.base_agent import SAFE_LIMIT
 from core.llm_types import LLMResponse
 from core.logging_setup import mask_secret, preview
 
@@ -80,11 +81,27 @@ class CloudAPIProvider(BaseLLM):
         не обрезала ли модель ответ по ``max_tokens`` (иначе оборванный код
         уходит дальше и провоцирует бесконечный цикл правок).
         """
-        _, max_tokens, temperature = self._get_config(task_type)
+        context_limit, config_max_tokens, temperature = self._get_config(task_type)
+        # Динамический бюджет генерации: из лимита контекста вычитаем токены
+        # промпта (роль + запрос) и резерв SAFE_LIMIT. Это гарантирует, что
+        # max_tokens НИКОГДА не больше, чем реально осталось места в контексте,
+        # и модель не упрётся в «cap» посреди ответа из-за раздувшегося промпта.
+        prompt_tokens_observed = kwargs.get("prompt_tokens")
+        if prompt_tokens_observed is not None:
+            max_tokens = min(
+                config_max_tokens, max(1, context_limit - SAFE_LIMIT - prompt_tokens_observed)
+            )
+        else:
+            # Провайдер не получил счётчик из BaseAgent (например, tiktoken
+            # недоступен) — остаёмся на статическом значении из конфига.
+            max_tokens = config_max_tokens
         logger.debug(
-            "🤖 Параметры вызова: модель=%s, task_type=%s, max_tokens=%d, temperature=%.2f.",
+            "🤖 Параметры вызова: модель=%s, task_type=%s, context_limit=%d, "
+            "prompt_tokens=%s, max_tokens=%d (динамический), temperature=%.2f.",
             self.model_name,
             task_type,
+            context_limit,
+            prompt_tokens_observed,
             max_tokens,
             temperature,
         )
