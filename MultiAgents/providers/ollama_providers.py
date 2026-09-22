@@ -3,6 +3,7 @@ import os
 
 import httpx
 from core.base_llm import BaseLLM
+from core.llm_types import LLMResponse
 from core.logging_setup import preview
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,13 @@ class AsyncOllamaClient(BaseLLM):
         prompt: str,
         system_prompt: str = "",
         task_type: str = "chat",
-    ) -> str | None:
-        """Реализация _generate() для Ollama."""
+    ) -> LLMResponse | None:
+        """Реализация _generate() для Ollama.
+
+        Возвращает ``LLMResponse`` с ``done_reason``: Ollama сама сообщает,
+        упёрлась ли генерация в ``num_predict`` ("length"). Обрезанный ответ
+        нельзя подавать в sandbox/ревью — пайплайн должен знать об обрезке.
+        """
         model_name, ctx, predict, temp = self._get_config(task_type)
         logger.debug(
             "🤖 Параметры вызова Ollama: модель=%s, task_type=%s, num_ctx=%s, num_predict=%s, temperature=%s.",
@@ -91,6 +97,25 @@ class AsyncOllamaClient(BaseLLM):
             )
             response = await client.post(self.chat_url, json=payload)
             response.raise_for_status()
-            content = response.json()["message"]["content"]
+            data = response.json()
+            content = data["message"]["content"]
+            # done_reason у Ollama: "stop" | "length" | null. "length" значит,
+            # что ответ не поместился в num_predict — такой текст нельзя
+            # считать полным кодом.
+            done_reason = data.get("done_reason")
             logger.debug("🤖 Ответ Ollama: %s", preview(content))
-            return content
+            if not content or not content.strip():
+                logger.warning(
+                    "⚠️ Пустой ответ Ollama (done_reason=%s).", done_reason
+                )
+                return None
+            if done_reason == "length":
+                logger.warning(
+                    "⚠️ Ответ Ollama обрезан (done_reason=length). Код может быть недописан."
+                )
+            return LLMResponse(
+                text=content.strip(),
+                finish_reason=done_reason,
+                prompt_tokens=data.get("prompt_eval_count"),
+                completion_tokens=data.get("eval_count"),
+            )

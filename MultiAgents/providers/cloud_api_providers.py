@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from config.key_llm import cloud_key
 
 from core.base_llm import BaseLLM
+from core.llm_types import LLMResponse
 from core.logging_setup import mask_secret, preview
 
 logger = logging.getLogger(__name__)
@@ -72,8 +73,13 @@ class CloudAPIProvider(BaseLLM):
         system_prompt: str = "",
         task_type: str = "chat",
         **kwargs,
-    ) -> str | None:
-        """Реализация _generate() для облачного API (с повторными попытками)."""
+    ) -> LLMResponse | None:
+        """Реализация _generate() для облачного API (с повторными попытками).
+
+        Возвращает ``LLMResponse`` с ``finish_reason``: пайплайн должен знать,
+        не обрезала ли модель ответ по ``max_tokens`` (иначе оборванный код
+        уходит дальше и провоцирует бесконечный цикл правок).
+        """
         _, max_tokens, temperature = self._get_config(task_type)
         logger.debug(
             "🤖 Параметры вызова: модель=%s, task_type=%s, max_tokens=%d, temperature=%.2f.",
@@ -108,9 +114,34 @@ class CloudAPIProvider(BaseLLM):
                     top_p=0.95,
                     messages=messages,
                 )
-                content = response.choices[0].message.content
+                choice = response.choices[0]
+                content = choice.message.content
+                # Причина остановки генерации: "stop" | "length" | ...
+                # API без причины (None) НЕ помечаем как обрезанный — это
+                # избегает ложных срабатываний на нестандартных эндпоинтах.
+                finish_reason = getattr(choice, "finish_reason", None)
+                usage = getattr(response, "usage", None)
+                prompt_tokens = (
+                    getattr(usage, "prompt_tokens", None) if usage else None
+                )
+                completion_tokens = (
+                    getattr(usage, "completion_tokens", None) if usage else None
+                )
                 if content and content.strip():
-                    return content.strip()
+                    if finish_reason == "length":
+                        logger.warning(
+                            "⚠️ Ответ обрезан по max_tokens=%d (finish_reason=length, "
+                            "потоков: %d/%d). Код может быть недописан.",
+                            max_tokens,
+                            completion_tokens if completion_tokens is not None else -1,
+                            max_tokens,
+                        )
+                    return LLMResponse(
+                        text=content.strip(),
+                        finish_reason=finish_reason,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
                 last_error = "пустой ответ модели"
                 logger.warning(
                     "⚠️ Пустой ответ LLM (попытка %d/%d).", attempt, total_attempts

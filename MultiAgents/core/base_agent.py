@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from core.base_llm import BaseLLM
+from core.llm_types import LLMResponse, coerce_response
 from core.logging_setup import (
     _AGENT_HANDLER_MARKER,
     get_run_log_dir,
@@ -63,6 +64,11 @@ class BaseAgent:
         self.name = name_agent  # Просто имя агента
         self.role_prompt = role_prompt  # роль агента
         self.llm = llm  # LLM
+        # Метаданные последнего ответа LLM (finish_reason, токены). Шаг 5
+        # использует это, чтобы НЕ принимать обрезанный код как полноценный.
+        # Для FakeAgent (возвращает str) значение остаётся None — старые
+        # тесты на урезание не срабатывают.
+        self.last_response_meta: LLMResponse | None = None
         # Стабильный идентификатор для файла agents/<id>.log и имени логгера.
         self.agent_id = _to_agent_id(name_agent)
         # Отдельный логгер: пишет в свой файл (полные тексты) и НЕ дублирует
@@ -158,7 +164,7 @@ class BaseAgent:
 
         started_at = time.perf_counter()
         try:
-            response = await self.llm.generate(
+            raw_response = await self.llm.generate(
                 prompt=prompt,
                 system_prompt=self.role_prompt,
                 task_type=task_type,
@@ -175,6 +181,12 @@ class BaseAgent:
             return None
 
         elapsed = time.perf_counter() - started_at
+        # Совместимость: провайдеры возвращают LLMResponse, заглушки тестов —
+        # строку. Приводим к единому конверту и сохраняем метаданные: шагу 5
+        # нужно знать, не обрезан ли ответ (finish_reason == "length").
+        meta = coerce_response(raw_response)
+        self.last_response_meta = meta
+        response = meta.text
         if not response:
             logger.warning(
                 "⚠️ Агент «%s»: пустой ответ LLM за %.2f сек (task_type=%s).",

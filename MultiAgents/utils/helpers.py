@@ -86,6 +86,44 @@ class Helper:
         return code.strip()
 
     @staticmethod
+    def is_response_complete(text: str) -> bool:
+        """Проверяет, не оборвался ли ответ модели.
+
+        Это «страховка» для провайдеров, которые не сообщают finish_reason:
+        если текст физически не завершён (оборвался посреди конструкции),
+        его нельзя принимать как полноценный код. В сочетании с проверкой
+        ``LLMResponse.truncated`` в шаге 5 это решает проблему «молчаливой
+        обрезки».
+
+        Дискриминаторы незавершённости:
+          - модель начала тег ``<verdict>``, но не закрыла его ``</verdict>``
+            (в 44/50 реальных обрезов ответ обрывается именно в этом месте);
+          - в хвосте текста незакрытая скобка ([{()] глубже, чем закрывающих);
+          - в хвосте одна (нечётная) тройная кавычка — открытый docstring;
+          - нечётное число markdown-фенсов ``` в хвосте (незакрытый блок).
+
+        Полный валидный код (даже большой) эти маркеры не даёт: скобки и
+        кавычки сбалансированы, теги вердикта либо отсутствуют, либо закрыты.
+        """
+        if not text or not text.strip():
+            return False
+
+        lowered = text.lower()
+        if "<verdict" in lowered and "</verdict>" not in lowered:
+            return False
+
+        tail = text[-120:]
+        depth = tail.count("(") + tail.count("[") + tail.count("{")
+        closing = tail.count(")") + tail.count("]") + tail.count("}")
+        if depth > closing:
+            return False
+        if tail.count('"""') % 2 == 1 or tail.count("'''") % 2 == 1:
+            return False
+        if tail.count("```") % 2 == 1:
+            return False
+        return True
+
+    @staticmethod
     def validate_syntax_python(code_string: str) -> tuple[bool, str | None]:
         """Валидация пайтона"""
         try:

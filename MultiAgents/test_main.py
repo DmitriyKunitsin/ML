@@ -474,6 +474,50 @@ async def process_step_5_coder(
         prompt=prompt_for_coder,
         task_type="code",
     )
+
+    # --- Борьба с «молчаливой обрезкой» ответа (корень цикла 5<->6<->7) ---
+    # Провайдер сообщил finish_reason="length" (упёрлись в max_tokens) или
+    # текст физически оборван посреди конструкции — такой код нельзя
+    # отправлять на проверку: он гарантированно не пройдёт и будет крутить
+    # цикл. Переспрашиваем кодера один раз (с компактной директивой).
+    coder_meta = getattr(agents[AgentType.CODER], "last_response_meta", None)
+    truncated_by_provider = bool(coder_meta and coder_meta.truncated)
+    structurally_incomplete = not Helper.is_response_complete(code or "")
+    if truncated_by_provider or structurally_incomplete:
+        reason = (
+            "обрыв по лимиту токенов (finish_reason=length)"
+            if truncated_by_provider
+            else "текст ответа оборван (нет закрывающего тега/незакрытая конструкция)"
+        )
+        logger.warning(
+            "💻 Шаг 5: ответ кодера неполный (%s). Делаю одну целевую "
+            "повторную генерацию с укороченным контекстом.",
+            reason,
+        )
+        code = await agents[AgentType.CODER].execute_task(
+            prompt=(
+                prompt_for_coder
+                + "\n\nВНИМАНИЕ: твой предыдущий ответ ОБОРВАЛСЯ (не был дописан "
+                "до конца) и был отброшен целиком. Напиши полный код ЗАНОВО. "
+                "Сократи комментарии, не повторяй ТЗ, экономь токены. "
+                "Обязательно закончи ответ тегом <verdict>APPROVED</verdict> "
+                "или <verdict>REJECTED</verdict>."
+            ),
+            task_type="code",
+        )
+        # После повтора перечитываем метаданные: повторный ответ тоже мог
+        # упереться в max_tokens (finish_reason=length).
+        coder_meta = getattr(agents[AgentType.CODER], "last_response_meta", None)
+        if (
+            (coder_meta and coder_meta.truncated)
+            or not code
+            or not Helper.is_response_complete(code or "")
+        ):
+            logger.error(
+                "❌ Программист повторно вернул неполный/пустой код после "
+                "уведомления об обрыве. Прерываю пайплайн (лимит: эскалация человеку)."
+            )
+            return LIMIT_EXIT
     if not code:
         logger.error(
             "❌ Программист не вернул код (пустой ответ LLM). Прерываю пайплайн."
