@@ -22,6 +22,7 @@ from test_main import (
     FINISH_OK,
     LIMIT_EXIT,
     MAX_REVIEW_ATTEMPTS,
+    MAX_SYNTAX_ATTEMPTS,
     AgentType,
     process_step_5_coder,
     process_step_6_compiler,
@@ -90,7 +91,9 @@ def run_pipeline(agents, context, max_iterations=3 * MAX_REVIEW_ATTEMPTS + 10):
     async def _run():
         step = 2
         spec_attempts = 0
-        code_attempts = 0
+        # Два независимых счётчика: проверки синтаксиса и правки кода (ревью).
+        syntax_attempts = 0
+        review_attempts = 0
         iterations = 0
         while step <= 7:
             iterations += 1
@@ -108,12 +111,12 @@ def run_pipeline(agents, context, max_iterations=3 * MAX_REVIEW_ATTEMPTS + 10):
             elif step == 5:
                 step = await process_step_5_coder(agents, context)
             elif step == 6:
-                step, code_attempts = await process_step_6_compiler(
-                    agents, context, code_attempts
+                step, syntax_attempts = await process_step_6_compiler(
+                    agents, context, syntax_attempts
                 )
             elif step == 7:
-                step, code_attempts = await process_step_7_tester(
-                    agents, context, code_attempts
+                step, review_attempts = await process_step_7_tester(
+                    agents, context, review_attempts
                 )
         return step, iterations
 
@@ -213,8 +216,23 @@ class TestPipelineTermination(unittest.TestCase):
         step, iterations = run_pipeline(agents, context)
 
         self.assertEqual(step, LIMIT_EXIT)
-        self.assertEqual(len(agents[AgentType.CODER].calls), MAX_REVIEW_ATTEMPTS)
+        self.assertEqual(len(agents[AgentType.CODER].calls), MAX_SYNTAX_ATTEMPTS)
         self.assertLess(iterations, 3 * MAX_REVIEW_ATTEMPTS + 10)
+
+    def test_syntax_errors_do_not_consume_review_budget(self):
+        """После MAX_SYNTAX_ATTEMPTS неудачных проверок синтаксиса пайплайн
+        выходит по синтаксическому лимиту, а не по лимиту ревью: счётчики
+        независимы (раньше делили один budget и «съедали» друг друга)."""
+        agents = build_agents(coder_default=BROKEN_MISSING_COLON)
+        context = new_context()
+
+        step, _ = run_pipeline(agents, context)
+
+        self.assertEqual(step, LIMIT_EXIT)
+        # Кодер вызывался ровно столько раз, сколько допустимо проверок
+        # синтаксиса (шаг 6 не смог пройти НИ разу -> ревью не вызывался).
+        self.assertEqual(len(agents[AgentType.CODER].calls), MAX_SYNTAX_ATTEMPTS)
+        self.assertEqual(agents[AgentType.TESTER].calls, [])
 
     def test_empty_code_terminates(self):
         """Кодер возвращает None (ошибка LLM) — выход, а не бесконечный цикл."""
@@ -296,11 +314,11 @@ class TestStep6Compiler(unittest.TestCase):
         context = new_context()
 
         step, attempts = asyncio.run(
-            process_step_6_compiler(agents, context, MAX_REVIEW_ATTEMPTS - 1)
+            process_step_6_compiler(agents, context, MAX_SYNTAX_ATTEMPTS - 1)
         )
 
         self.assertEqual(step, LIMIT_EXIT)
-        self.assertEqual(attempts, MAX_REVIEW_ATTEMPTS)
+        self.assertEqual(attempts, MAX_SYNTAX_ATTEMPTS)
 
 
 class TestStep7Tester(unittest.TestCase):

@@ -39,6 +39,9 @@ from utils.progress_spinner import stop as spinner_stop
 PROGRESS_SPINNER = os.getenv("PROGRESS_SPINNER", "1").lower() not in ("0", "false", "off")
 
 MAX_REVIEW_ATTEMPTS = 15  # Максимальное количество правок кода (эскалация человеку)
+MAX_SYNTAX_ATTEMPTS = 10  # Лимит ПРОВЕРОК СИНТАКСИСА (шаг 6) — отдельный от ревью.
+# Раньше синтаксис и ревью делили один счётчик: 15 неудачных компиляций
+# «съедали» весь лимит правок кода и наоборот. Теперь это независимые лимиты.
 MAX_SPEC_ATTEMPTS = 5  # Максимальное количество правок ТЗ
 
 # --- Борьба с «циклом смерти»: изоляция контекста между итерациями ---
@@ -596,8 +599,8 @@ async def process_step_6_compiler(
         logger.error("❌ Шаг 6: код отсутствует в контексте.")
         attempts += 1
         context[AgentType.COMPILER] = "Код отсутствует"
-        if attempts >= MAX_REVIEW_ATTEMPTS:
-            logger.error("❌ Превышено максимальное количество правок кода (нет кода).")
+        if attempts >= MAX_SYNTAX_ATTEMPTS:
+            logger.error("❌ Превышен лимит проверок синтаксиса (нет кода).")
             return LIMIT_EXIT, attempts  # exit while
         return 5, attempts
 
@@ -613,10 +616,8 @@ async def process_step_6_compiler(
         feedback = "Код пустой после очистки от markdown."
         feedback_history_push(context, AgentType.COMPILER, feedback)
         context[AgentType.COMPILER] = feedback
-        if attempts >= MAX_REVIEW_ATTEMPTS:
-            logger.error(
-                "❌ Превышено максимальное количество правок кода (пустой код)."
-            )
+        if attempts >= MAX_SYNTAX_ATTEMPTS:
+            logger.error("❌ Превышен лимит проверок синтаксиса (пустой код).")
             return LIMIT_EXIT, attempts
         return 5, attempts
 
@@ -631,10 +632,8 @@ async def process_step_6_compiler(
         attempts += 1
         feedback_history_push(context, AgentType.COMPILER, feedback)
         context[AgentType.COMPILER] = feedback
-        if attempts >= MAX_REVIEW_ATTEMPTS:
-            logger.error(
-                "❌ Превышено максимальное количество правок кода (компиляция)."
-            )
+        if attempts >= MAX_SYNTAX_ATTEMPTS:
+            logger.error("❌ Превышен лимит проверок синтаксиса (компиляция).")
             return LIMIT_EXIT, attempts  # exit while
         return 5, attempts
 
@@ -705,12 +704,12 @@ async def main():
     step = 2
     context = {"user_idea": MY_PROMPT}
     feedback_history_init(context)
-    context.setdefault("code_attempts", 0)
-    # Два независимых счетчика: правки ТЗ и правки кода. Счётчик правок кода
-    # живёт в контексте (ключ "code_attempts") и синхронизируется между
-    # шагами 6/7, поэтому лимит попыток не обходится.
+    # Три независимых счётчика: правки ТЗ, проверки синтаксиса (шаг 6) и
+    # правки кода/ревью (шаг 7). Раньше синтаксис и ревью делили один лимит:
+    # 15 неудачных компиляций «съедали» весь бюджет правок кода и наоборот.
     spec_attempts = 0
-    code_attempts = 0
+    syntax_attempts = 0
+    review_attempts = 0
     started_at = time.perf_counter()
     # Приём от пользователя о «зависшем» пайплайне: включаем анимированный
     # статус «Работает…» сразу после старта.
@@ -744,21 +743,21 @@ async def main():
             elif step == 5:
                 step = await process_step_5_coder(agents, context)
             elif step == 6:
-                step, code_attempts = await process_step_6_compiler(
-                    agents, context, context["code_attempts"]
+                step, syntax_attempts = await process_step_6_compiler(
+                    agents, context, syntax_attempts
                 )  # -> 5 || 7 || finish
-                context["code_attempts"] = code_attempts
             elif step == 7:
-                step, code_attempts = await process_step_7_tester(
-                    agents, context, context["code_attempts"]
+                step, review_attempts = await process_step_7_tester(
+                    agents, context, review_attempts
                 )  # -> 8 || -> 5
-                context["code_attempts"] = code_attempts
         if step == LIMIT_EXIT:
             logger.warning(
                 "⚠️ Пайплайн остановлен по лимиту попыток "
-                "(правок ТЗ: %d, правок кода: %d). Сохраняю текущий результат.",
+                "(правок ТЗ: %d, проверок синтаксиса: %d, правок кода: %d). "
+                "Сохраняю текущий результат.",
                 spec_attempts,
-                code_attempts,
+                syntax_attempts,
+                review_attempts,
             )
         elif step == FINISH_OK:
             logger.info("✅ Пайплайн завершён успешно: код согласован тестировщиком.")
