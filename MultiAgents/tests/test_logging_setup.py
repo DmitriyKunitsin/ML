@@ -52,7 +52,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # core/logging_setup.py здесь нет: он настраивает корневой логгер и не
 # логирует от своего имени — своего logger у него и не должно быть.
 LOGGED_MODULES = (
-    "test_main.py",
+    "main.py",
     "core/base_agent.py",
     "core/base_llm.py",
     "providers/cloud_api_providers.py",
@@ -266,7 +266,7 @@ class TestStageMarkers(unittest.TestCase):
     этап находится глазами моментально (📋 ТЗ, 💻 код, 🔧 компиляция, 🧪 тесты).
     """
 
-    # Шаг -> эмодзи, которым он помечен в test_main.py.
+    # Шаг -> эмодзи, которым он помечен в main.py.
     STAGE_MARKERS = {
         "Шаг 2": "📋",
         "Шаг 3": "✔",
@@ -277,7 +277,7 @@ class TestStageMarkers(unittest.TestCase):
     }
 
     def setUp(self):
-        self.source = (PROJECT_ROOT / "test_main.py").read_text(encoding="utf-8")
+        self.source = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
 
     def test_each_stage_has_emoji_marker(self):
         for stage, marker in self.STAGE_MARKERS.items():
@@ -294,7 +294,7 @@ class TestStageMarkers(unittest.TestCase):
 
     def test_source_file_is_utf8_without_bom(self):
         """BOM ломает первый импорт и портит grep — файл должен быть чистым UTF-8."""
-        raw = (PROJECT_ROOT / "test_main.py").read_bytes()
+        raw = (PROJECT_ROOT / "main.py").read_bytes()
 
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "файл начинается с BOM")
 

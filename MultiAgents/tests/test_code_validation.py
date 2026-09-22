@@ -207,14 +207,14 @@ class TestCheckCodeSyntax(unittest.TestCase):
 
     def test_cpp_target_does_not_require_avr_toolchain(self):
         """При TARGET_LANG=cpp без avr-g++ проверка не блокирует пайплайн."""
-        import test_main
+        import main
 
-        original = test_main.TARGET_LANG
-        test_main.TARGET_LANG = "cpp"
+        original = main.TARGET_LANG
+        main.TARGET_LANG = "cpp"
         try:
             ok, error = check_code_syntax("void setup() {}\nvoid loop() {}\n")
         finally:
-            test_main.TARGET_LANG = original
+            main.TARGET_LANG = original
         self.assertTrue(ok)
         self.assertIsNone(error)
 

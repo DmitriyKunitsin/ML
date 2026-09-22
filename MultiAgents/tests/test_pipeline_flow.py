@@ -1,4 +1,4 @@
-"""Тесты стейт-машины пайплайна из test_main.py.
+"""Тесты стейт-машины пайплайна из main.py.
 
 Сеть не используется: вместо LLM-провайдера подставляются заглушки агентов,
 которые возвращают заранее заданные ответы (валидный код, код с ошибкой,
@@ -632,24 +632,32 @@ class TestMainIntegration(unittest.TestCase):
     def _run_main(self, agents, capture=True):
         """Прогоняет main() с заглушками.
 
-        capture=True перехватывает записи логгера test_main через assertLogs.
+        capture=True перехватывает записи логгера main через assertLogs.
         Для проверки ФАЙЛА перехват не нужен: assertLogs отключает propagate
-        у логгера test_main, и записи не доходят до файлового хендлера корня.
+        у логгера main, и записи не доходят до файлового хендлера корня.
+
+        Патчим атрибуты модуля ``main``, а не фасада ``test_main``: функция
+        main() обращается к глобалам своего модуля (main), поэтому моки
+        должны жить там же.
         """
+        import main as main_module
+
         env = {
             "PROJECT_DIR": self.tmpdir,
             "LOG_DIR": os.path.join(self.tmpdir, "logs"),
         }
         with mock.patch.dict(os.environ, env):
-            with mock.patch.object(test_main, "create_agents", return_value=agents):
+            with mock.patch.object(
+                main_module, "create_agents", return_value=agents
+            ):
                 with mock.patch.object(
-                    test_main, "CloudAPIProvider"
+                    main_module, "CloudAPIProvider"
                 ) as provider_cls:
                     if not capture:
-                        asyncio.run(test_main.main())
+                        asyncio.run(main_module.main())
                         return provider_cls, None
-                    with self.assertLogs("test_main", level="INFO") as captured:
-                        asyncio.run(test_main.main())
+                    with self.assertLogs("main", level="INFO") as captured:
+                        asyncio.run(main_module.main())
         return provider_cls, captured
 
     def test_main_saves_results_and_returns(self):
@@ -887,18 +895,53 @@ class TestPromptsByTarget(unittest.TestCase):
         )
 
     def test_create_agents_uses_cpp_profile_for_cpp(self):
-        import test_main
+        import main
 
         class _StubLLM:
             model_name = "stub"
 
-        original = test_main.TARGET_LANG
-        test_main.TARGET_LANG = "cpp"
+        original = main.TARGET_LANG
+        main.TARGET_LANG = "cpp"
         try:
-            agents = test_main.create_agents(_StubLLM())
+            agents = main.create_agents(_StubLLM())
         finally:
-            test_main.TARGET_LANG = original
-        self.assertIn("avr-g++", agents[test_main.AgentType.COMPILER].role_prompt)
+            main.TARGET_LANG = original
+        self.assertIn("avr-g++", agents[main.AgentType.COMPILER].role_prompt)
+
+
+class TestTestMainFacade(unittest.TestCase):
+    """test_main.py — фасад над main.py для обратной совместимости."""
+
+    def test_facade_reexports_public_api(self):
+        import test_main
+
+        self.assertTrue(hasattr(test_main, "create_agents"))
+        self.assertTrue(hasattr(test_main, "main"))
+        self.assertTrue(hasattr(test_main, "AgentType"))
+        self.assertTrue(hasattr(test_main, "MY_PROMPT"))
+        self.assertTrue(hasattr(test_main, "parse_verdict"))
+        self.assertTrue(hasattr(test_main, "save_results"))
+
+    def test_facade_reexports_private_helpers(self):
+        import test_main
+
+        self.assertTrue(hasattr(test_main, "_should_rewrite_from_scratch"))
+        self.assertTrue(hasattr(test_main, "_is_negative_feedback"))
+
+    def test_facade_pointing_to_main(self):
+        import main
+        import test_main
+
+        # Фасад разделяет пространство имён с main: те же объекты функций.
+        self.assertIs(test_main.create_agents, main.create_agents)
+        self.assertIs(test_main.main, main.main)
+
+    def test_main_module_is_runnable_as_entry_point(self):
+        """python main.py не должен падать на импорте (проверка синтаксиса)."""
+        import importlib
+        import main
+
+        self.assertIs(importlib.import_module("main"), main)
 
 
 if __name__ == "__main__":
