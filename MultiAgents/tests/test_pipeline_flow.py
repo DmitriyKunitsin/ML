@@ -434,6 +434,44 @@ class TestFeedbackHistory(unittest.TestCase):
         test_main.feedback_history_push(context, AgentType.TESTER, "Проверь границы.")
         self.assertFalse(test_main._should_rewrite_from_scratch(context))
 
+    def test_rewrite_after_repeated_rejected_verdict(self):
+        """Вечный REJECTED от тестировщика обязан распознаваться как
+        деградация (раньше детектор смотрел только SyntaxError и не ловил
+        этот сценарий — пайплайн молотил цикл 5<->7 до упора)."""
+        context = {"user_idea": "x"}
+        for _ in range(3):
+            test_main.feedback_history_push(
+                context,
+                AgentType.TESTER,
+                "<verdict>REJECTED</verdict>\nДобавь обработку пустых файлов.",
+            )
+        self.assertTrue(test_main._should_rewrite_from_scratch(context))
+
+    def test_no_rewrite_when_rejected_interspersed_with_clear(self):
+        """Если среди REJECTED есть фидбек без маркеров отказа (т.е. нейтральный
+        комментарий) — это НЕ «три подряд отрицательных», рерайт не нужен."""
+        context = {"user_idea": "x"}
+        test_main.feedback_history_push(
+            context, AgentType.TESTER, "<verdict>REJECTED</verdict>\nБаг"
+        )
+        test_main.feedback_history_push(context, AgentType.TESTER, "Ок, но поправь стиль")
+        test_main.feedback_history_push(
+            context, AgentType.TESTER, "<verdict>REJECTED</verdict>\nБаг"
+        )
+        self.assertFalse(test_main._should_rewrite_from_scratch(context))
+
+    def test_is_negative_feedback_marks_compiler_and_verdict(self):
+        self.assertTrue(test_main._is_negative_feedback("SyntaxError: line 3"))
+        self.assertTrue(
+            test_main._is_negative_feedback(
+                "Код не скомпилировался. Ошибки компилятора:\n..."
+            )
+        )
+        self.assertTrue(
+            test_main._is_negative_feedback("<verdict>REJECTED</verdict>")
+        )
+        self.assertFalse(test_main._is_negative_feedback("Стиль ок, мелочи поправить"))
+
     def test_snapshot_formats_sources(self):
         context = {"user_idea": "x"}
         test_main.feedback_history_push(context, AgentType.TESTER, "Кейс пуст")

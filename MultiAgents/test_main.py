@@ -249,29 +249,44 @@ def feedback_snapshot(context: dict) -> str:
     return "\n\n".join(blocks)
 
 
+def _is_negative_feedback(text: str) -> bool:
+    """Является ли фидбек «отрицательным» (код не принят и требует правок).
+
+    Фиксирует маркеры, которыми пайплайн и промпты помечают неудачу:
+    вердикт REJECTED, ошибки компиляции/синтаксиса, «отклон», «не скомпилировался».
+    """
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "rejected",
+            "<verdict>rejected</verdict>",
+            "syntaxerror",
+            "не скомпилировался",
+            "не удалось",
+            "ошибки компилятора",
+        )
+    )
+
+
 def _should_rewrite_from_scratch(context: dict) -> bool:
     """Пора ли переписать код с нуля вместо рискованного «латания».
 
-    Если в последних замечаниях подряд повторяется одна и та же категория
-    синтаксических ошибок (редко удаётся починить «латанием»), или мы уже
-    упёрлись в повтор цикла, лучше сбросить предыдущий код из контекста и
-    попросить модель написать реализацию заново. Это предотвращает
-    «штопание» всё более сломанного кода.
+    Срабатывает, если в последних ``RESET_THRESHOLD`` фидбэках подряд НЕТ
+    успеха — то есть код систематически не принимается (компиляция или ревью),
+    особенно когда фидбеки повторяются дословно (кодер «топчется на месте»).
+
+    Раньше критерий был узким (три подряд ``SyntaxError``), из-за чего вечный
+    REJECTED от тестировщика НЕ детектился как деградация, и пайплайн молотил
+    цикл до исчерпания лимита. Расширен на любой отрицательный фидбек.
     """
     history = context.get("feedback_history") or []
     if len(history) < RESET_THRESHOLD:
         return False
 
-    # Смотрим последние RESET_THRESHOLD фидбэков: среди них не должно быть
-    # перемежающихся подтверждений. Достаточно проверить маркер SyntaxError.
     seq = [entry.get("text", "") for entry in history[-RESET_THRESHOLD:]]
-    same_error_count = 0
-    for text in seq:
-        if "SyntaxError" in text or "пустой" in text.lower():
-            same_error_count += 1
-        else:
-            same_error_count = 0
-    return same_error_count >= RESET_THRESHOLD
+    # Три подряд отрицательных фидбека — код не чинится, пора переписать.
+    return all(_is_negative_feedback(text) for text in seq)
 
 
 def truncate_code_for_context(coder, code: str, max_tokens: int) -> str:
