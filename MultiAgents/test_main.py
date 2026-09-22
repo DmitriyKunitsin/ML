@@ -38,14 +38,29 @@ from utils.progress_spinner import stop as spinner_stop
 # Отключить можно через PROGRESS_SPINNER=0 (например, для CI).
 PROGRESS_SPINNER = os.getenv("PROGRESS_SPINNER", "1").lower() not in ("0", "false", "off")
 
-MAX_REVIEW_ATTEMPTS = 50  # Максимальное количество правок (отдельно для ТЗ и для кода)
+MAX_REVIEW_ATTEMPTS = 15  # Максимальное количество правок кода (эскалация человеку)
 MAX_SPEC_ATTEMPTS = 5  # Максимальное количество правок ТЗ
+
+# --- Борьба с «циклом смерти»: изоляция контекста между итерациями ---
+# Кодеру передаётся НЕ вся история правок, а только последние N фидбэков
+# (кольцевой буфер). Иначе к середине цикла его контекст — это простыня из
+# старых замечаний, и модель «захлёбывается» (генерирует невалидный код).
+FEEDBACK_HISTORY_LIMIT = 3
+# Если подряд приходит N одинаковых ошибок (SyntaxError) — код деградирует,
+# а не чинится. Переключаем кодера на режим «перепиши с нуля по ТЗ».
+RESET_THRESHOLD = 3
+# Доля доступного контекста (после SAFE_LIMIT), выделяемая на «предыдущий код».
+# Остальное — ТЗ, архитектура и фидбеки. Предотвращает переполнение контекста.
+CODE_TOKEN_BUDGET_PCT = 0.35
 
 # Целевой язык генерируемого кода: "python" (obsidian-скрипт из MY_PROMPT)
 # или "cpp" (Arduino-скетч). От него зависит способ проверки синтаксиса и
 # имя файла результата. Меняется через переменную окружения TARGET_LANG.
 TARGET_LANG = os.getenv("TARGET_LANG", "python").lower()
 CODE_EXTENSIONS = {"python": "py", "cpp": "ino"}
+
+# Резерв контекста под генерацию ответа модели (аналогично core.base_agent.SAFE_LIMIT).
+SAFE_LIMIT = 2000
 
 # Шаги-терминаторы стейт-машины:
 LIMIT_EXIT = 8  # Остановка по лимиту правок / из-за отсутствия данных
@@ -134,19 +149,155 @@ def strip_verdict_tag(response_text: str) -> str:
     """Убирает служебный тег <verdict>...</verdict> из ответа агента.
 
     CODER_PROMPT требует завершать ответ вердиктом, поэтому ответ кодера
-    выглядит как «код + <verdict>APPROVED</verdict>». Такой текст нельзя
+    обычно выглядит как «код + <verdict>APPROVED</verdict>». Такой текст нельзя
     подавать на валидацию синтаксиса: тег не является кодом.
-    Всё, что идёт после тега, тоже отбрасывается (там пояснения модели).
+
+    Модель иногда нарушает порядок и ставит вердикт ПЕРЕД кодом
+    («<verdict>REJECTED</verdict> вот код...»). Тогда чистый код лежит после
+    тега — берём его. При нескольких тегах оставляем последний блок кода.
+    Если тег один и код идёт до него — берём дотеговую часть.
     """
     if not response_text:
         return ""
 
     tag_pattern = r"<\s*verdict\s*>\s*(?:APPROVED|REJECTED)\s*<\s*/\s*verdict\s*>"
-    match = re.search(tag_pattern, response_text, re.IGNORECASE | re.DOTALL)
-    if match:
-        # Берём текст до тега: код всегда идёт первым.
-        return response_text[: match.start()].strip()
-    return response_text.strip()
+    matches = list(re.finditer(tag_pattern, response_text, re.IGNORECASE | re.DOTALL))
+    if not matches:
+        return response_text.strip()
+
+    last = matches[-1]
+    before = response_text[: last.start()].strip()
+    after = response_text[last.end() :].strip()
+
+    # Если после последнего тега что-то есть — вероятно, это запрошенный
+    # правкой код/пояснение. В противном случае берём дотеговую часть.
+    if before and not _looks_like_explanation(after):
+        return before
+    return after or before
+
+
+def _looks_like_explanation(text: str) -> bool:
+    """Примерная эвристика: является ли текст после тега «бла-бла», а не кодом."""
+    if not text:
+        return False
+    # Код почти всегда содержит рав или фигурные скобки/отступы, пояснение — нет.
+    code_hints = ("def ", "class ", "import ", "=", "```", "{", "}", "return ")
+    lowered = text.strip().lower()
+    if any(hint in lowered for hint in code_hints):
+        return False
+    # Слишком длинный «код без признаков кода» — это пояснение.
+    return len(text) < 400
+
+
+# =====================================================================
+# Управление контекстом цикла правок (борьба с «контекстной помойкой»)
+# =====================================================================
+def feedback_history_init(context: dict) -> None:
+    """Гарантирует наличие кольцевого буфера последних замечаний в context.
+
+    Ключ «feedback_history» не совпадает ни с одним AgentType, поэтому
+    не пересекается с данными ТЗ/кода/архитектуры.
+    """
+    context.setdefault("feedback_history", [])
+
+
+def feedback_history_push(context: dict, source: str, text: str) -> None:
+    """Добавляет замечание в кольцевой буфер, ограничивая его глубину.
+
+    Это и есть «изоляция контекста между итерациями»: кодер видит НЕ всю
+    историю замечаний, а только последние FEEDBACK_HISTORY_LIMIT штук.
+    Многолетние «старые» замечания не накапливаются и не загрязняют промпт.
+    """
+    if not text or not text.strip():
+        return
+    feedback_history_init(context)
+    history = context["feedback_history"]
+    history.append({"source": source, "text": text.strip()})
+    if len(history) > FEEDBACK_HISTORY_LIMIT:
+        # Отбрасываем самую старую запись: счётчик неизменен внутри буфера.
+        del history[: len(history) - FEEDBACK_HISTORY_LIMIT]
+
+
+def feedback_snapshot(context: dict) -> str:
+    """Форматирует последние замечания для включения в промпт кодера.
+
+    Каждый фидбек снабжается префиксом источника («тестировщик» /
+    «компилятор»), чтобы кодер понимал, что чинить. Возвращает пустую
+    строку, если замечаний нет (или фидбеки почищены после APPROVED).
+    """
+    history = context.get("feedback_history") or []
+    if not history:
+        return ""
+    blocks = []
+    for entry in history:
+        source_label = (
+            "отчет тестировщика"
+            if entry["source"] == AgentType.TESTER
+            else "отчет компилятора"
+        )
+        blocks.append(f"Исправь ошибки из {source_label}:\n{entry['text']}")
+    return "\n\n".join(blocks)
+
+
+def _should_rewrite_from_scratch(context: dict) -> bool:
+    """Пора ли переписать код с нуля вместо рискованного «латания».
+
+    Если в последних замечаниях подряд повторяется одна и та же категория
+    синтаксических ошибок (редко удаётся починить «латанием»), или мы уже
+    упёрлись в повтор цикла, лучше сбросить предыдущий код из контекста и
+    попросить модель написать реализацию заново. Это предотвращает
+    «штопание» всё более сломанного кода.
+    """
+    history = context.get("feedback_history") or []
+    if len(history) < RESET_THRESHOLD:
+        return False
+
+    # Смотрим последние RESET_THRESHOLD фидбэков: среди них не должно быть
+    # перемежающихся подтверждений. Достаточно проверить маркер SyntaxError.
+    seq = [entry.get("text", "") for entry in history[-RESET_THRESHOLD:]]
+    same_error_count = 0
+    for text in seq:
+        if "SyntaxError" in text or "пустой" in text.lower():
+            same_error_count += 1
+        else:
+            same_error_count = 0
+    return same_error_count >= RESET_THRESHOLD
+
+
+def truncate_code_for_context(coder, code: str, max_tokens: int) -> str:
+    """Обрезает «предыдущий код» по токенному бюджету, если он не влезает.
+
+    Не отдаём модели весь огромный код из прошлой итерации — это переполняет
+    контекст и «токсично». Показываем хвост (последние строки: в них обычно
+    и сидят исправляемые конструкции) с явной пометкой обрезки.
+    """
+    if not code:
+        return ""
+    try:
+        tokens = coder.count_tokens(code)
+    except Exception:
+        # Не смогли посчитать токены (нет кэша tiktoken?) — режем по символам.
+        tokens = len(code) // 3  # грубая оценка: ~3 символа на токен
+    if tokens <= max_tokens:
+        return code
+
+    # Не пропорция токенов->символов (это слишком грубо и часто даёт расщепление
+    # посреди строки). Берём последние max_tokens символов с запасом и затем
+    # отрезаем по границе строки.
+    tail_chars = max(200, int(len(code) * (max_tokens / max(tokens, 1))))
+    tail = code[-tail_chars:].lstrip("\n")
+    # Не выходим за границу '```', если обрезка попала в markdown-блок.
+    marker = "\n... [предыдущий код обрезан по лимиту токенов, показан хвост] ...\n"
+    return marker + tail
+
+
+async def _code_context_budget(coder) -> int:
+    """Сколько токенов можно отдать под «предыдущий код» в промпте кодера."""
+    try:
+        limit = await coder.llm._get_context_limit("code")
+    except Exception:
+        limit = 8192
+    return max(500, int((limit - SAFE_LIMIT) * CODE_TOKEN_BUDGET_PCT))
 
 
 def check_code_syntax(code: str) -> tuple[bool, str | None]:
@@ -271,6 +422,7 @@ async def process_step_5_coder(
     agents: dict[AgentType, BaseAgent], context: dict
 ) -> int:
     logger.info("💻 Шаг 5: написание кода (агент «%s»).", agents[AgentType.CODER].name)
+    feedback_history_init(context)
 
     if context.get(AgentType.CODER):
         # Отдаём модели уже очищенный от markdown и вердикта код
@@ -278,22 +430,43 @@ async def process_step_5_coder(
             strip_verdict_tag(context[AgentType.CODER])
         )
 
-    prompt_for_coder = f"Напиши код по архитектуре:\n{context[AgentType.ARHITEKTOR]}\n\nИ ТЗ:\n{context[AgentType.SPEC_WRITER]}"
+    prompt_for_coder = (
+        f"Напиши код по архитектуре:\n{context[AgentType.ARHITEKTOR]}"
+        f"\n\nИ ТЗ:\n{context[AgentType.SPEC_WRITER]}"
+    )
 
-    if context.get(AgentType.TESTER):  # есть замечания от тестера
-        prompt_for_coder += (
-            f"\n\nИсправь ошибки из отчета тестировщика:\n{context[AgentType.TESTER]}"
+    # Изоляция контекста: кодер видит ТОЛЬКО последние замечания из
+    # feedback_history (кольцевой буфер), а не всю накопленную простыню.
+    feedback_text = feedback_snapshot(context)
+    if feedback_text:
+        # Если много подряд повторяющихся SyntaxError — код деградировал.
+        # Переключаемся на «перепиши с нуля по ТЗ» и не показываем старый код.
+        if _should_rewrite_from_scratch(context):
+            prompt_for_coder += (
+                "\n\nКРИТИЧЕСКИ ВАЖНО: предыдущие итерации только ломали код "
+                "(повторяющиеся SyntaxError). НЕ пытайся «латать» старый код — "
+                "НАПИШИ ПОЛНУЮ РЕАЛИЗАЦИЮ С НУЛЯ по ТЗ и архитектуре выше. "
+                "Игнорируй предыдущий код и старые замечания."
+            )
+            logger.warning(
+                "💻 Шаг 5: детектирована деградация кода — просим кодера "
+                "переписать с нуля, старый код из контекста исключён."
+            )
+        else:
+            prompt_for_coder += f"\n\n{feedback_text}"
+            logger.info("💻 Шаг 5: в промпт добавлены последние замечания ревью.")
+
+    previous_code = context.get(AgentType.CODER)
+    if previous_code and not _should_rewrite_from_scratch(context):
+        # Отсечение контекста по токенам: не впихиваем весь прошлый код,
+        # если он не влезает в бюджет модельки.
+        code_budget = await _code_context_budget(agents[AgentType.CODER])
+        trimmed_previous = truncate_code_for_context(
+            agents[AgentType.CODER], previous_code, code_budget
         )
-        logger.info("💻 Шаг 5: в промпт добавлены замечания тестировщика.")
-    if context.get(AgentType.COMPILER):  # есть замечания от компилера
-        prompt_for_coder += (
-            f"\n\nИсправь ошибки из отчета компилятора:\n{context[AgentType.COMPILER]}"
-        )
-        logger.info("💻 Шаг 5: в промпт добавлены замечания компилятора.")
-    if context.get(AgentType.CODER):  # есть предыдущий код
         fence = "cpp" if TARGET_LANG == "cpp" else "python"
         prompt_for_coder += (
-            f"\n\nТвой предыдущий код :\n```{fence}\n{context[AgentType.CODER]}\n```"
+            f"\n\nТвой предыдущий код :\n```{fence}\n{trimmed_previous}\n```"
         )
 
     logger.debug("💻 Шаг 5: промпт кодера: %s", preview(prompt_for_coder))
@@ -308,9 +481,12 @@ async def process_step_5_coder(
         return LIMIT_EXIT
     # CODER_PROMPT обязывает модель выводить <verdict>...</verdict>:
     # без отрезания тега код не пройдёт проверку синтаксиса на шаге 6.
-    context[AgentType.CODER] = strip_verdict_tag(code)
+    cleaned_code = Helper.clean_code(strip_verdict_tag(code))
+    context[AgentType.CODER] = cleaned_code
+
     logger.info(
-        "✅ Шаг 5: код получен (%d симв.), перехожу к проверке синтаксиса.", len(code)
+        "✅ Шаг 5: код получен (%d симв.), перехожу к sandbox-проверке синтаксиса.",
+        len(cleaned_code),
     )
     logger.debug("💻 Шаг 5: ответ кодера: %s", preview(code))
     return 6
@@ -343,6 +519,7 @@ async def process_step_7_tester(
     if status == "APPROVED":
         logger.info("💚 Код успешно согласован тестировщиком.")
         context[AgentType.TESTER] = ""
+        context["feedback_history"] = []  # чистим историю правок
         return FINISH_OK, 0  # Успешный финиш
     else:
         attempts += 1
@@ -354,10 +531,14 @@ async def process_step_7_tester(
         )
         if attempts >= MAX_REVIEW_ATTEMPTS:
             logger.error(
-                "❌ Превышено максимальное количество правок кода (%d).",
+                "❌ Превышено максимальное количество правок кода (%d). "
+                "Эскалирую человеку: сохраняю последнюю версию кода и замечания.",
                 MAX_REVIEW_ATTEMPTS,
             )
             return LIMIT_EXIT, attempts  # exit while
+        # Замечание попадает в кольцевой буфер (последние N), а не копится
+        # бесконечно: кодер на следующей итерации видит только актуальный срез.
+        feedback_history_push(context, AgentType.TESTER, feedback)
         context[AgentType.TESTER] = feedback
         return 5, attempts  # next step 5
 
@@ -378,13 +559,16 @@ async def process_step_6_compiler(
 
     cleaned_code = Helper.clean_code(strip_verdict_tag(context[AgentType.CODER]))
     context[AgentType.CODER] = cleaned_code
+    feedback_history_init(context)
 
     if not cleaned_code.strip():
         logger.warning(
             "⚠️ Шаг 6: после очистки кода не осталось (только markdown/вердикт)."
         )
         attempts += 1
-        context[AgentType.COMPILER] = "Код пустой после очистки от markdown."
+        feedback = "Код пустой после очистки от markdown."
+        feedback_history_push(context, AgentType.COMPILER, feedback)
+        context[AgentType.COMPILER] = feedback
         if attempts >= MAX_REVIEW_ATTEMPTS:
             logger.error(
                 "❌ Превышено максимальное количество правок кода (пустой код)."
@@ -401,6 +585,7 @@ async def process_step_6_compiler(
         )
         feedback = f"Код не скомпилировался. Ошибки компилятора:\n{errors_text}"
         attempts += 1
+        feedback_history_push(context, AgentType.COMPILER, feedback)
         context[AgentType.COMPILER] = feedback
         if attempts >= MAX_REVIEW_ATTEMPTS:
             logger.error(
@@ -475,7 +660,11 @@ async def main():
     agents = create_agents(llm_client=cloud)
     step = 2
     context = {"user_idea": MY_PROMPT}
-    # Два независимых счетчика: правки ТЗ и правки кода
+    feedback_history_init(context)
+    context.setdefault("code_attempts", 0)
+    # Два независимых счетчика: правки ТЗ и правки кода. Счётчик правок кода
+    # живёт в контексте (ключ "code_attempts") и синхронизируется между
+    # шагами 6/7, поэтому лимит попыток не обходится.
     spec_attempts = 0
     code_attempts = 0
     started_at = time.perf_counter()
@@ -512,12 +701,14 @@ async def main():
                 step = await process_step_5_coder(agents, context)
             elif step == 6:
                 step, code_attempts = await process_step_6_compiler(
-                    agents, context, code_attempts
+                    agents, context, context["code_attempts"]
                 )  # -> 5 || 7 || finish
+                context["code_attempts"] = code_attempts
             elif step == 7:
                 step, code_attempts = await process_step_7_tester(
-                    agents, context, code_attempts
+                    agents, context, context["code_attempts"]
                 )  # -> 8 || -> 5
+                context["code_attempts"] = code_attempts
         if step == LIMIT_EXIT:
             logger.warning(
                 "⚠️ Пайплайн остановлен по лимиту попыток "

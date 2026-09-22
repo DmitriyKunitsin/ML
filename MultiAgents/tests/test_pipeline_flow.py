@@ -362,6 +362,97 @@ class TestStep5Coder(unittest.TestCase):
 
         self.assertEqual(step, LIMIT_EXIT)
 
+    def test_rewrite_directive_when_code_degrades(self):
+        """Повторные SyntaxError -> кодер получает «перепиши с нуля»,
+        а старый код исключается из промпта (нет «Твой предыдущий код»)."""
+        agents = build_agents(coder_default=VALID_PROJECT_SCANNER)
+        context = context_with_artifacts(VALID_PROJECT_SCANNER)
+        # Три подряд SyntaxError в последних замечаниях.
+        for i in range(3):
+            test_main.feedback_history_push(
+                context,
+                AgentType.COMPILER,
+                f"Код не скомпилировался. Ошибки компилятора:\nSyntaxError: invalid syntax (line {i})",
+            )
+
+        asyncio.run(process_step_5_coder(agents, context))
+
+        prompt = agents[AgentType.CODER].calls[0]["prompt"]
+        self.assertIn("НАПИШИ ПОЛНУЮ РЕАЛИЗАЦИЮ С НУЛЯ", prompt)
+        self.assertNotIn("Твой предыдущий код", prompt)
+
+
+class TestFeedbackHistory(unittest.TestCase):
+    """Изоляция контекста правок: кодер видит только последние N замечаний,
+    а не всю накопленную историю (это и есть лечение «контекстной помойки»).
+    """
+
+    def test_history_ring_bounded(self):
+        context = {"user_idea": "x"}
+        test_main.feedback_history_init(context)
+        for i in range(10):
+            test_main.feedback_history_push(
+                context, AgentType.COMPILER, f"SyntaxError #{i}"
+            )
+        self.assertEqual(len(context["feedback_history"]), test_main.FEEDBACK_HISTORY_LIMIT)
+        # Самые старые вытеснены, остались последние N.
+        self.assertNotIn("SyntaxError #0", context["feedback_history"][0]["text"])
+        self.assertIn("SyntaxError #9", context["feedback_history"][-1]["text"])
+
+    def test_rewrite_from_scratch_after_repeated_syntax_errors(self):
+        """Три подряд SyntaxError — сигнал «перепиши с нуля», а не «латай»."""
+        context = {"user_idea": "x"}
+        for i in range(4):
+            test_main.feedback_history_push(
+                context, AgentType.COMPILER, f"SyntaxError: invalid syntax (line {i})"
+            )
+        self.assertTrue(test_main._should_rewrite_from_scratch(context))
+
+    def test_no_rewrite_on_mixed_feedback(self):
+        """Разнородные замечания (не только SyntaxError) не вызывают сброс."""
+        context = {"user_idea": "x"}
+        test_main.feedback_history_push(context, AgentType.TESTER, "Добавь валидацию.")
+        test_main.feedback_history_push(context, AgentType.COMPILER, "SyntaxError: x")
+        test_main.feedback_history_push(context, AgentType.TESTER, "Проверь границы.")
+        self.assertFalse(test_main._should_rewrite_from_scratch(context))
+
+    def test_snapshot_formats_sources(self):
+        context = {"user_idea": "x"}
+        test_main.feedback_history_push(context, AgentType.TESTER, "Кейс пуст")
+        test_main.feedback_history_push(
+            context, AgentType.COMPILER, "Синтаксис сломан"
+        )
+        snapshot = test_main.feedback_snapshot(context)
+        self.assertIn("отчет тестировщика", snapshot)
+        self.assertIn("отчет компилятора", snapshot)
+        self.assertIn("Кейс пуст", snapshot)
+        self.assertIn("Синтаксис сломан", snapshot)
+
+
+class TestTruncateCodeForContext(unittest.TestCase):
+    """Обрезка «предыдущего кода» по токенному бюджету: не заливаем весь
+    огромный код из прошлой итерации в контекст модели."""
+
+    def test_short_code_is_untouched(self):
+        class _Coder:
+            def count_tokens(self, text):
+                return 100
+
+        code = "def f():\n    return 1\n"
+        out = test_main.truncate_code_for_context(_Coder(), code, max_tokens=500)
+        self.assertEqual(out, code)
+
+    def test_huge_code_is_tail_truncated(self):
+        class _Coder:
+            def count_tokens(self, text):
+                # Эмулируем огромный код: символы «съедают» много токенов.
+                return 10_000
+
+        code = ("line_of_code = 1\n" * 500)
+        out = test_main.truncate_code_for_context(_Coder(), code, max_tokens=100)
+        self.assertLess(len(out), len(code))
+        self.assertIn("обрезан", out)
+
 
 class TestSaveResults(unittest.TestCase):
     """save_results(): файлы сохраняются всегда, даже при пустом контексте."""
