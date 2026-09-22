@@ -730,5 +730,37 @@ class TestLLMTimeout(unittest.TestCase):
                 os.environ["LLM_TIMEOUT"] = started
 
 
+class TestTesterPromptCriteria(unittest.TestCase):
+    """TESTER_PROMPT должен давать модели двоичный критерий выбора вердикта.
+
+    Проблема: промпт описывал «сломать код», но не говорил, когда писать
+    APPROVED. Итог — вечный REJECTED (15/15) и бесконечный цикл 5<->7.
+    """
+
+    def test_prompt_requires_binary_verdict(self):
+        from config.prompts import TESTER_PROMPT
+
+        self.assertIn("APPROVED", TESTER_PROMPT)
+        self.assertIn("REJECTED", TESTER_PROMPT)
+        self.assertIn("<verdict>", TESTER_PROMPT)
+
+    def test_prompt_explains_when_to_approve(self):
+        from config.prompts import TESTER_PROMPT
+
+        # Критерий APPROVED: если и только если код функционален и по ТЗ.
+        self.assertIn("ЕСЛИ И ТОЛЬКО ЕСЛИ", TESTER_PROMPT)
+        self.assertIn("соответствует ТЗ", TESTER_PROMPT)
+
+    def test_prompt_explains_when_to_reject(self):
+        from config.prompts import TESTER_PROMPT
+
+        self.assertIn("критические или мажорные ошибки", TESTER_PROMPT)
+
+    def test_prompt_forbids_text_after_verdict(self):
+        from config.prompts import TESTER_PROMPT
+
+        self.assertIn("Ничего не должно идти после него", TESTER_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()
