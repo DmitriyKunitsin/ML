@@ -52,15 +52,15 @@ class CloudAPIProvider(BaseLLM):
         # task_type приходит из BaseAgent.execute_task(task_type=...).
         self._task_configs = {
             # Развёрнутый, но не гигантский ответ (ТЗ, архитектура, ревью).
-            "chat": (16384, 4096, 0.5),
+            "chat": (1048576, 131072, 0.5),
             # Код: низкая температура для строгого синтаксиса, максимум токенов.
-            "code": (32768, 8192, 0.2),
+            "code": (1048576, 131072, 0.2),
             # Проектирование архитектуры — компромисс объёма и стабильности.
-            "boss": (32768, 4096, 0.3),
+            "boss": (1048576, 131072, 0.3),
             # Ревью больших ТЗ и скетчей — нужен большой запас токенов.
-            "review": (32768, 4096, 0.3),
+            "review": (1048576, 131072, 0.3),
         }
-        self._default_config = (16384, 4096, 0.5)
+        self._default_config = (131072, 4096, 0.5)
 
     def _get_config(self, task_type: str) -> tuple[int, int, float]:
         return self._task_configs.get(task_type.lower(), self._default_config)
@@ -72,7 +72,7 @@ class CloudAPIProvider(BaseLLM):
         self,
         prompt: str,
         system_prompt: str = "",
-        task_type: str = "chat",
+        task_type: str = "code",
         **kwargs,
     ) -> LLMResponse | None:
         """Реализация _generate() для облачного API (с повторными попытками).
@@ -89,7 +89,8 @@ class CloudAPIProvider(BaseLLM):
         prompt_tokens_observed = kwargs.get("prompt_tokens")
         if prompt_tokens_observed is not None:
             max_tokens = min(
-                config_max_tokens, max(1, context_limit - SAFE_LIMIT - prompt_tokens_observed)
+                config_max_tokens,
+                max(1, context_limit - SAFE_LIMIT - prompt_tokens_observed),
             )
         else:
             # Провайдер не получил счётчик из BaseAgent (например, tiktoken
@@ -138,9 +139,7 @@ class CloudAPIProvider(BaseLLM):
                 # избегает ложных срабатываний на нестандартных эндпоинтах.
                 finish_reason = getattr(choice, "finish_reason", None)
                 usage = getattr(response, "usage", None)
-                prompt_tokens = (
-                    getattr(usage, "prompt_tokens", None) if usage else None
-                )
+                prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
                 completion_tokens = (
                     getattr(usage, "completion_tokens", None) if usage else None
                 )
@@ -185,7 +184,9 @@ class CloudAPIProvider(BaseLLM):
             if attempt < total_attempts:
                 # Случайная пауза (не суммарная экспонента): если в будущем
                 # появятся параллельные агенты — попытки не совпадут по времени.
-                await asyncio.sleep(self.retry_delay + random.uniform(0, self.retry_delay))
+                await asyncio.sleep(
+                    self.retry_delay + random.uniform(0, self.retry_delay)
+                )
 
         logger.error("❌ LLM недоступна, запрос не выполнен: %s", last_error)
         return None
