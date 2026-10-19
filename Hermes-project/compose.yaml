@@ -1,0 +1,42 @@
+services:
+  # 1. ОСНОВНОЙ СЕРВИС (Gateway + API)
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    dns:
+      - 8.8.8.8
+    ports:
+      - "8643:8643"
+    volumes:
+      - hermes_data:/opt/data # Переключаемся на именованный volume
+    env_file:
+      - .hermes/.env # Путь относительно файла compose.yaml
+    environment:
+      - HERMES_LOG_DIR=/opt/data/logs
+      - HERMES_RUN_DIR=/tmp/hermes-run
+
+  # 2. СЕРВИС DASHBOARD
+  hermes-dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes_dashboard
+    restart: unless-stopped
+    command: dashboard --host 0.0.0.0 --port 9119
+    ports:
+      - "9119:9119"
+    volumes:
+      - hermes_data:/opt/data # Общая чистая папка данных
+    environment:
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=2008
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=7gDdzhi4k5O2mHKaOyMg7aPcycPcFjO9PKXqw5Q2aoE=
+      - GATEWAY_HEALTH_URL=http://hermes:8643
+      - HERMES_LOG_DIR=/opt/data/logs
+      - HERMES_RUN_DIR=/tmp/hermes-run
+    depends_on:
+      - hermes
+
+# Объявляем изолированный Linux-диск для Docker
+volumes:
+  hermes_data:

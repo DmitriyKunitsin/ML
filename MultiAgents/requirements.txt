@@ -1,0 +1,13 @@
+# Зависимости MultiAgents-пайплайна.
+# Установка: pip install -r requirements.txt
+# Тесты: python -m pytest -q
+
+# HTTP-провайдер (Ollama) и OpenAI-совместимый облачный API.
+httpx>=0.28
+openai>=1.0
+
+# Токенизация промптов (подсчёт токенов для бюджета контекста).
+tiktoken>=0.7
+
+# --- Тесты ---
+pytest>=8.0
