@@ -2,6 +2,7 @@ import asyncio
 import re, os
 from enum import Enum
 from providers.ollama_providers import AsyncOllamaClient
+from providers.cloud_api_providers import CloudAPIProvider
 from core.base_agent import BaseAgent
 from config.prompts import (
     ARHITEKTOR_PROMPT,
@@ -228,8 +229,15 @@ async def process_step_7_compiler(
         return 8, 0
 
 
+from key.token import access_token
+
 async def main():
-    ollama = AsyncOllamaClient()
+    # ollama = AsyncOllamaClient()
+    ollama = CloudAPIProvider(
+        model_name="deepseek-ai/DeepSeek-V4-Flash",
+        api_key=access_token,
+        url="https://552fa2c0-f962-4028-be18-a68f73c74699-agent.ai-agent.inference.cloud.ru"
+    )
 
     # 1 Пишу своими словами ТЗ
     # 2 SPEC_WRITER_PROMPT составляет ТЗ
